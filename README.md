@@ -2,6 +2,10 @@
 
 This repo provides a simple toolchain to evaluate Dify Knowledge Base retrieval quality across different configurations (chunking strategy, TopK, reranking on/off).
 
+Chinese docs:
+- `README.zh-CN.md`
+- `docs/FAQ.zh-CN.md`
+
 Core scripts (pipeline):
 1. `build_evaluation_set.py`: build candidate questions from an existing Dify dataset (Knowledge Base)
 2. Manual review: filter candidates and save as `evaluation_set.xlsx`
@@ -101,4 +105,3 @@ See `examples/` for a tiny demo corpus and a sample `evaluation_set_example.xlsx
 
 `CRUD_RAG/` is included as a git submodule pointing to `https://github.com/IAAR-Shanghai/CRUD_RAG.git`.
 It is not required for running the Dify evaluation scripts.
-
