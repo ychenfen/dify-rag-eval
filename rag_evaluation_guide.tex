@@ -1,0 +1,2197 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[UTF8]{ctex}
+\usepackage{geometry}
+\usepackage{graphicx}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{tcolorbox}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+
+\geometry{left=2.5cm,right=2.5cm,top=2.5cm,bottom=2.5cm}
+
+% 代码样式设置
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.95,0.95,0.92}
+
+\lstdefinestyle{mystyle}{
+    backgroundcolor=\color{backcolour},
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{magenta},
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\footnotesize,
+    breakatwhitespace=false,
+    breaklines=true,
+    captionpos=b,
+    keepspaces=true,
+    numbers=left,
+    numbersep=5pt,
+    showspaces=false,
+    showstringspaces=false,
+    showtabs=false,
+    tabsize=2,
+    frame=single,
+    rulecolor=\color{black}
+}
+\lstset{style=mystyle}
+
+% 提示框样式
+\tcbuselibrary{skins,breakable}
+\newtcolorbox{notebox}{
+    colback=blue!5!white,
+    colframe=blue!75!black,
+    title=注意,
+    fonttitle=\bfseries
+}
+\newtcolorbox{tipbox}{
+    colback=green!5!white,
+    colframe=green!75!black,
+    title=提示,
+    fonttitle=\bfseries
+}
+\newtcolorbox{warnbox}{
+    colback=red!5!white,
+    colframe=red!75!black,
+    title=警告,
+    fonttitle=\bfseries
+}
+
+\title{\Huge\textbf{Dify 知识库召回率评测完整指南} \\ \Large 从零开始搭建 RAG 检索效果评估系统}
+\author{RAG 评测技术文档}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\tableofcontents
+\newpage
+
+%=============================================================================
+\section{概述与背景}
+%=============================================================================
+
+\subsection{什么是 RAG 召回率评测}
+
+当你使用 Dify 搭建知识库问答系统时，整个问答流程可以分为两个阶段：第一阶段是"检索"，系统根据用户的问题，从知识库中找出最相关的文档片段；第二阶段是"生成"，大语言模型基于检索到的内容，生成最终的回答。
+
+召回率评测关注的是第一阶段——检索环节的效果。具体来说，它要回答一个核心问题：当用户提出问题时，系统能否准确地从知识库中找到包含正确答案的文档或段落？
+
+这个问题非常关键。因为如果检索阶段就没有找到正确的内容，那么无论大模型多么强大，也无法给出准确的回答。可以说，检索质量是整个 RAG 系统的基础。
+
+\subsection{为什么需要系统化的评测}
+
+很多人在搭建知识库问答系统时，会采用"手工测试"的方式来评估效果：随机问几个问题，看看回答得对不对。这种方式存在几个明显的问题：
+
+首先，样本量太小，不具有统计意义。你测试的那几个问题可能恰好都能回答正确，但换一批问题可能就不行了。
+
+其次，缺乏可比性。当你调整了分块策略或修改了参数后，很难客观判断效果是变好了还是变差了。
+
+最后，无法持续监控。知识库会不断更新，新增文档、修改内容，如果没有系统化的评测，你无法知道这些变化对检索效果的影响。
+
+系统化的召回率评测可以解决以上所有问题。通过构建标准化的评测集，使用统一的评测指标，你可以：
+
+\begin{itemize}[leftmargin=2em]
+    \item \textbf{客观对比不同配置的效果}：Dify 提供了通用分块、父子分块、QA分块三种索引方式，每种方式还有不同的参数可以调整。通过评测，你可以用数据说明哪种配置最适合你的场景。
+
+    \item \textbf{科学地进行参数调优}：chunk\_size 设多大？overlap 要不要？TopK 取几最合适？这些问题都可以通过评测来回答，而不是凭感觉猜测。
+
+    \item \textbf{建立效果基线，持续监控}：每次知识库更新后，跑一遍评测，就能知道效果有没有下降。如果发现问题，可以及时排查原因。
+
+    \item \textbf{评估新技术的收益}：比如是否要引入重排器（Reranker），能带来多少提升？值不值得为此增加延迟和成本？这些决策都需要数据支撑。
+\end{itemize}
+
+\subsection{核心评测指标详解}
+
+在正式开始评测之前，我们需要先了解几个核心指标。这些指标是评估检索效果的标准语言，理解它们的含义非常重要。
+
+\begin{table}[h]
+\centering
+\begin{tabular}{llp{7cm}}
+\toprule
+\textbf{指标} & \textbf{计算公式} & \textbf{含义说明} \\
+\midrule
+Recall@K & $\frac{\text{命中的问题数}}{\text{总问题数}}$ & 在所有测试问题中，有多少问题能在 Top K 个检索结果里找到正确答案 \\
+Precision@K & $\frac{\text{命中数}}{K \times \text{总问题数}}$ & 检索返回的结果中，有多少是真正相关的 \\
+F1@K & $\frac{2 \times P \times R}{P + R}$ & 召回率和精确率的调和平均，综合衡量检索效果 \\
+MRR & $\frac{1}{N}\sum_{i=1}^{N}\frac{1}{rank_i}$ & 正确答案首次出现位置的倒数平均值，反映排序质量 \\
+\bottomrule
+\end{tabular}
+\caption{核心评测指标说明}
+\end{table}
+
+为了更好地理解这些指标，我们来看一个具体的例子：
+
+假设你有一个问题"年假有多少天"，系统返回了 5 条检索结果（Top5）。经过核对，第 2 条结果中包含了正确答案"员工入职满一年，可享受5天带薪年假"。
+
+在这个例子中：
+\begin{itemize}[leftmargin=2em]
+    \item 这个问题"命中"了，因为 Top5 中有正确答案
+    \item 命中排名是 2，因为正确答案出现在第 2 条
+    \item 这个问题对 MRR 的贡献是 $\frac{1}{2} = 0.5$
+\end{itemize}
+
+如果我们测试了 100 个问题，其中 80 个问题在 Top5 中找到了正确答案，那么 Recall@5 = 80\%。
+
+%=============================================================================
+\section{环境准备}
+%=============================================================================
+
+本节将详细介绍运行评测脚本所需的环境配置。即使你之前没有 Python 开发经验，按照以下步骤操作也能顺利完成配置。
+
+\subsection{系统要求}
+
+在开始之前，请确认你的电脑满足以下基本要求：
+
+\begin{itemize}[leftmargin=2em]
+    \item \textbf{操作系统}：Windows 10/11、macOS 10.15 及以上、Ubuntu 18.04 及以上版本均可
+    \item \textbf{Python 版本}：需要 Python 3.8 或更高版本，推荐使用 Python 3.10 或 3.11
+    \item \textbf{内存}：建议 8GB 以上，如果评测集较大或需要生成复杂图表，16GB 会更流畅
+    \item \textbf{网络}：需要能够访问你的 Dify 服务，无论是本地部署还是云端版本
+\end{itemize}
+
+\subsection{Python 环境安装}
+
+\subsubsection{Windows 系统安装步骤}
+
+Windows 用户请按照以下步骤安装 Python：
+
+\begin{enumerate}[leftmargin=2em]
+    \item 打开浏览器，访问 Python 官方网站：\url{https://www.python.org/downloads/}
+
+    \item 在页面上找到 Python 3.10 或 3.11 版本的下载链接，点击下载。注意：不建议下载最新版本，因为部分依赖库可能还未完全适配。
+
+    \item 下载完成后，双击安装程序。在安装界面的第一页，\textbf{务必勾选底部的 "Add Python to PATH" 选项}。这一步非常关键，如果忘记勾选，后续在命令行中将无法直接使用 python 命令。
+
+    \item 点击 "Install Now" 开始安装，等待安装完成。
+
+    \item 安装完成后，验证是否安装成功。按下 Win+R 键打开运行对话框，输入 cmd 并回车，打开命令提示符窗口，输入以下命令：
+\end{enumerate}
+
+\begin{lstlisting}[language=bash]
+python --version
+# 如果安装成功，应该显示类似: Python 3.10.11 或 Python 3.11.4
+\end{lstlisting}
+
+\subsubsection{macOS 系统安装步骤}
+
+macOS 用户有两种安装方式可以选择。
+
+\textbf{方式一：使用 Homebrew 安装（推荐）}
+
+如果你的 Mac 上已经安装了 Homebrew（macOS 上最流行的包管理器），可以通过一行命令完成安装：
+
+\begin{lstlisting}[language=bash]
+# 使用 Homebrew 安装 Python 3.11
+brew install python@3.11
+
+# 安装完成后，验证版本
+python3 --version
+\end{lstlisting}
+
+\textbf{方式二：从官网下载安装包}
+
+如果没有安装 Homebrew，可以直接从官网下载安装包。访问 \url{https://www.python.org/downloads/macos/}，下载 Python 3.10 或 3.11 的 macOS 安装包，双击运行并按提示完成安装。
+
+\subsubsection{Linux 系统安装步骤}
+
+大多数 Linux 发行版都预装了 Python，但版本可能较旧。以 Ubuntu/Debian 系统为例，可以通过以下命令安装指定版本：
+
+\begin{lstlisting}[language=bash]
+# 更新软件包列表
+sudo apt update
+
+# 安装 Python 3.10 及相关工具
+sudo apt install python3.10 python3.10-venv python3-pip
+
+# 验证安装
+python3 --version
+\end{lstlisting}
+
+\subsection{创建项目目录}
+
+选择一个合适的位置创建项目目录。后续所有的代码文件、配置文件和输出结果都将存放在这个目录中。
+
+\begin{lstlisting}[language=bash]
+# Windows 用户（在命令提示符中执行）
+mkdir C:\RAG_Evaluation
+cd C:\RAG_Evaluation
+
+# macOS / Linux 用户（在终端中执行）
+mkdir -p ~/RAG_Evaluation
+cd ~/RAG_Evaluation
+\end{lstlisting}
+
+\subsection{创建 Python 虚拟环境}
+
+虚拟环境是 Python 开发中的最佳实践。它为当前项目创建一个独立的 Python 运行环境，安装的所有依赖库都只在这个环境中生效，不会影响系统中的其他 Python 项目。
+
+\begin{notebox}
+虽然虚拟环境不是必须的，但强烈建议使用。它可以避免不同项目之间的依赖冲突，也便于项目的迁移和部署。
+\end{notebox}
+
+\begin{lstlisting}[language=bash]
+# Windows 系统
+python -m venv venv
+venv\Scripts\activate
+
+# macOS / Linux 系统
+python3 -m venv venv
+source venv/bin/activate
+
+# 激活成功后，命令行提示符前会出现 (venv) 标识
+\end{lstlisting}
+
+\subsection{安装依赖库}
+
+评测脚本需要用到多个 Python 库，包括网络请求、数据处理、可视化等。为了方便管理，我们将所有依赖写入 \texttt{requirements.txt} 文件。
+
+在项目目录下创建 \texttt{requirements.txt} 文件，内容如下：
+
+\begin{lstlisting}
+requests>=2.28.0
+pandas>=1.5.0
+numpy>=1.23.0
+matplotlib>=3.6.0
+seaborn>=0.12.0
+tqdm>=4.64.0
+openpyxl>=3.0.0
+python-dotenv>=1.0.0
+jieba>=0.42.1
+\end{lstlisting}
+
+各依赖库的用途说明：
+\begin{itemize}[leftmargin=2em]
+    \item \texttt{requests}：用于调用 Dify API 进行检索
+    \item \texttt{pandas}：用于处理评测集和结果数据
+    \item \texttt{numpy}：用于数值计算
+    \item \texttt{matplotlib} 和 \texttt{seaborn}：用于生成可视化图表
+    \item \texttt{tqdm}：用于显示进度条
+    \item \texttt{openpyxl}：用于读写 Excel 文件
+    \item \texttt{python-dotenv}：用于加载环境变量配置
+    \item \texttt{jieba}：用于中文分词（构建评测集时使用）
+\end{itemize}
+
+执行以下命令安装所有依赖：
+
+\begin{lstlisting}[language=bash]
+pip install -r requirements.txt
+\end{lstlisting}
+
+\begin{tipbox}
+如果下载速度较慢，可以使用国内镜像源加速：
+\begin{lstlisting}[language=bash]
+pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+\end{lstlisting}
+\end{tipbox}
+
+\subsection{获取 Dify API 配置}
+
+运行评测脚本需要配置 Dify 的 API 访问凭证。你需要从 Dify 后台获取两项信息：API Key 和知识库 ID。
+
+\subsubsection{获取 API Key}
+
+API Key 是访问 Dify API 的身份凭证。获取步骤如下：
+
+\begin{enumerate}[leftmargin=2em]
+    \item 登录 Dify 控制台（本地部署版本或云端版本均可）
+    \item 点击左下角的「设置」按钮
+    \item 在设置页面中找到「API 密钥」选项
+    \item 点击「创建新密钥」按钮
+    \item 系统会生成一个新的 API Key，将其复制保存。注意：API Key 只会显示一次，请妥善保管
+\end{enumerate}
+
+\subsubsection{获取知识库 ID}
+
+每个知识库都有一个唯一的 ID。如果你想对比不同分块策略的效果，需要分别获取每个知识库的 ID。
+
+获取步骤如下：
+
+\begin{enumerate}[leftmargin=2em]
+    \item 进入 Dify 控制台的「知识库」页面
+    \item 点击进入你要评测的知识库
+    \item 查看浏览器地址栏中的 URL
+    \item URL 格式类似于：\texttt{https://xxx.dify.ai/datasets/\textcolor{red}{abc123def456}/documents}
+    \item 其中红色部分 \texttt{abc123def456} 就是该知识库的 ID
+\end{enumerate}
+
+\subsubsection{配置环境变量文件}
+
+为了安全地管理敏感配置信息，我们使用 \texttt{.env} 文件存储 API Key 和知识库 ID。
+
+在项目目录下创建 \texttt{.env} 文件，内容如下：
+
+\begin{lstlisting}
+# Dify API 基础配置
+DIFY_API_BASE=https://api.dify.ai/v1
+DIFY_API_KEY=在此处粘贴你的API Key
+
+# 知识库 ID 配置
+# 可以配置多个知识库，用于对比不同分块策略的效果
+
+# 使用"通用分块"策略的知识库
+DATASET_ID_GENERAL=在此处粘贴通用分块知识库的ID
+
+# 使用"父子分块"策略的知识库
+DATASET_ID_PARENT_CHILD=在此处粘贴父子分块知识库的ID
+
+# 使用"QA分块"策略的知识库
+DATASET_ID_QA=在此处粘贴QA分块知识库的ID
+\end{lstlisting}
+
+\begin{warnbox}
+\textbf{安全提醒}：\texttt{.env} 文件包含 API Key 等敏感信息，切勿将其提交到公开的代码仓库。如果你使用 Git 进行版本控制，请确保将 \texttt{.env} 添加到 \texttt{.gitignore} 文件中。
+\end{warnbox}
+
+%=============================================================================
+\section{评测集构建}
+%=============================================================================
+
+评测集是整个评测流程的基础和核心。本节将详细介绍评测集的设计原则、数据格式，以及如何高效地构建评测集。
+
+\subsection{评测集的重要性}
+
+评测集本质上是一组"问题-标准答案"的对应关系。每条数据包含一个用户可能会问的问题，以及这个问题的正确答案所在的文档位置。
+
+可以把评测集理解为一份"考试试卷"：我们用这份试卷来测试知识库检索系统的能力。试卷的质量直接决定了评测结果的可信度。
+
+一份高质量的评测集应该满足以下标准：
+
+\begin{itemize}[leftmargin=2em]
+    \item \textbf{覆盖面广}：评测集中的问题应该覆盖知识库的主要内容领域。如果知识库涵盖请假、报销、入职、社保等多个主题，评测集也应该包含这些主题的问题。
+
+    \item \textbf{问法多样}：针对同一个知识点，应该设计多种不同的问法。例如，"年假有几天"和"我可以休多少天年假"问的是同一件事，但表述方式不同。多样化的问法可以测试系统对语义理解的鲁棒性。
+
+    \item \textbf{标注准确}：每个问题都必须准确标注其正确答案所在的文档 ID（必须）和具体段落（可选）。标注错误会导致评测结果失真。
+
+    \item \textbf{规模适中}：评测集的规模需要在统计意义和人工成本之间取得平衡。对于初步评测，50-100 条数据就足够看出趋势；对于正式的效果评估，建议准备 300-500 条数据。
+\end{itemize}
+
+\subsection{评测集数据格式}
+
+评测集以 Excel（.xlsx）或 CSV 格式存储，每行代表一条测试数据。标准格式包含以下字段：
+
+\begin{table}[h]
+\centering
+\begin{tabular}{llp{7cm}}
+\toprule
+\textbf{字段名} & \textbf{数据类型} & \textbf{说明} \\
+\midrule
+id & 整数 & 唯一标识符，从 1 开始递增 \\
+query & 字符串 & 用户问题，即测试时用于检索的输入 \\
+gold\_doc\_id & 字符串 & 标准答案所在文档的 ID（从 Dify 后台获取） \\
+gold\_chunk\_text & 字符串 & 标准答案所在的具体段落内容（可选，用于人工复核） \\
+category & 字符串 & 问题所属的业务分类，便于按类别统计效果 \\
+difficulty & 字符串 & 问题难度等级：easy / medium / hard \\
+\bottomrule
+\end{tabular}
+\caption{评测集标准字段说明}
+\end{table}
+
+\subsection{评测集示例}
+
+以人事制度知识库为例，下面是一份评测集的示例数据：
+
+\begin{longtable}{p{0.5cm}p{4cm}p{2.5cm}p{5cm}p{1.5cm}}
+\toprule
+\textbf{id} & \textbf{query} & \textbf{gold\_doc\_id} & \textbf{gold\_chunk\_text} & \textbf{category} \\
+\midrule
+\endhead
+1 & 年假有多少天 & doc\_001 & 员工入职满一年，可享受5天带薪年假... & 请假 \\
+2 & 怎么申请报销 & doc\_002 & 报销流程：1.填写报销单 2.部门审批... & 报销 \\
+3 & 试用期多长时间 & doc\_003 & 试用期一般为3个月，特殊岗位不超过6个月 & 入职 \\
+4 & 社保什么时候交 & doc\_004 & 公司在员工入职次月15日前办理社保 & 社保 \\
+5 & 请假需要提前多久 & doc\_001 & 请假需提前3个工作日提交申请 & 请假 \\
+\bottomrule
+\caption{评测集示例（人事制度场景）}
+\end{longtable}
+
+从这个示例可以看出评测集的核心逻辑：建立"问题"与"答案来源"之间的对应关系。评测时，系统会检查检索结果中是否包含 \texttt{gold\_doc\_id} 指定的文档。
+
+\subsection{评测集构建工具}
+
+手工逐条填写评测集效率较低，特别是当知识库文档较多时。下面提供一个辅助脚本，可以从知识库中自动提取候选问题，大幅提升构建效率。
+
+该脚本的工作原理是：遍历知识库中的所有文档和分段，基于规则提取可能的问题（如标题、FAQ 条目等），生成候选评测集。你只需要对生成的候选数据进行人工审核和筛选即可。
+
+创建 \texttt{build\_evaluation\_set.py} 文件，内容如下：
+
+\begin{lstlisting}[language=python]
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+评测集构建工具
+用于从知识库文档中生成候选问题，辅助人工标注
+"""
+
+import os
+import json
+import pandas as pd
+from dotenv import load_dotenv
+import requests
+from tqdm import tqdm
+
+# 加载环境变量
+load_dotenv()
+
+class EvaluationSetBuilder:
+    """评测集构建器"""
+
+    def __init__(self):
+        self.api_base = os.getenv('DIFY_API_BASE', 'https://api.dify.ai/v1')
+        self.api_key = os.getenv('DIFY_API_KEY')
+        self.headers = {
+            'Authorization': f'Bearer {self.api_key}',
+            'Content-Type': 'application/json'
+        }
+
+    def get_dataset_documents(self, dataset_id: str) -> list:
+        """
+        获取知识库中的所有文档列表
+
+        Args:
+            dataset_id: 知识库ID
+
+        Returns:
+            文档列表
+        """
+        url = f"{self.api_base}/datasets/{dataset_id}/documents"
+        all_documents = []
+        page = 1
+
+        while True:
+            params = {'page': page, 'limit': 20}
+            response = requests.get(url, headers=self.headers, params=params)
+
+            if response.status_code != 200:
+                print(f"获取文档列表失败: {response.text}")
+                break
+
+            data = response.json()
+            documents = data.get('data', [])
+
+            if not documents:
+                break
+
+            all_documents.extend(documents)
+
+            if not data.get('has_more', False):
+                break
+
+            page += 1
+
+        print(f"共获取到 {len(all_documents)} 个文档")
+        return all_documents
+
+    def get_document_segments(self, dataset_id: str, document_id: str) -> list:
+        """
+        获取文档的所有分段
+
+        Args:
+            dataset_id: 知识库ID
+            document_id: 文档ID
+
+        Returns:
+            分段列表
+        """
+        url = f"{self.api_base}/datasets/{dataset_id}/documents/{document_id}/segments"
+        all_segments = []
+        page = 1
+
+        while True:
+            params = {'page': page, 'limit': 100}
+            response = requests.get(url, headers=self.headers, params=params)
+
+            if response.status_code != 200:
+                print(f"获取分段失败: {response.text}")
+                break
+
+            data = response.json()
+            segments = data.get('data', [])
+
+            if not segments:
+                break
+
+            all_segments.extend(segments)
+
+            if not data.get('has_more', False):
+                break
+
+            page += 1
+
+        return all_segments
+
+    def extract_candidate_questions(self, segment_text: str) -> list:
+        """
+        从文本段落中提取候选问题
+        基于规则的简单提取，可以替换为更智能的方法
+
+        Args:
+            segment_text: 段落文本
+
+        Returns:
+            候选问题列表
+        """
+        import jieba
+
+        questions = []
+
+        # 规则1: 如果段落包含"问："或"Q:"，直接提取
+        if '问：' in segment_text or 'Q:' in segment_text or 'Q：' in segment_text:
+            lines = segment_text.split('\n')
+            for line in lines:
+                if line.startswith('问：') or line.startswith('Q:') or line.startswith('Q：'):
+                    q = line.replace('问：', '').replace('Q:', '').replace('Q：', '').strip()
+                    if q:
+                        questions.append(q)
+
+        # 规则2: 提取标题类内容作为候选问题
+        lines = segment_text.split('\n')
+        for line in lines:
+            line = line.strip()
+            # 匹配标题格式
+            if line and len(line) < 50:
+                # 去除序号
+                import re
+                clean_line = re.sub(r'^[\d一二三四五六七八九十]+[\.、\s]', '', line)
+                if clean_line and len(clean_line) > 4:
+                    # 转换为问句
+                    if not clean_line.endswith('?') and not clean_line.endswith('？'):
+                        questions.append(f"{clean_line}是什么")
+                        questions.append(f"如何{clean_line}")
+
+        return questions[:5]  # 每个段落最多返回5个候选问题
+
+    def build_candidate_set(self, dataset_id: str, output_file: str = 'candidate_questions.xlsx'):
+        """
+        构建候选评测集
+
+        Args:
+            dataset_id: 知识库ID
+            output_file: 输出文件名
+        """
+        print("开始构建候选评测集...")
+
+        # 获取所有文档
+        documents = self.get_dataset_documents(dataset_id)
+
+        candidates = []
+
+        for doc in tqdm(documents, desc="处理文档"):
+            doc_id = doc['id']
+            doc_name = doc.get('name', 'unknown')
+
+            # 获取文档分段
+            segments = self.get_document_segments(dataset_id, doc_id)
+
+            for seg in segments:
+                seg_id = seg.get('id', '')
+                seg_text = seg.get('content', '')
+
+                if not seg_text:
+                    continue
+
+                # 提取候选问题
+                questions = self.extract_candidate_questions(seg_text)
+
+                for q in questions:
+                    candidates.append({
+                        'id': len(candidates) + 1,
+                        'query': q,
+                        'gold_doc_id': doc_id,
+                        'gold_doc_name': doc_name,
+                        'gold_segment_id': seg_id,
+                        'gold_chunk_text': seg_text[:200],  # 截取前200字符
+                        'category': '',  # 待人工填写
+                        'difficulty': '',  # 待人工填写
+                        'is_valid': '',  # 待人工确认（Y/N）
+                    })
+
+        # 保存到Excel
+        df = pd.DataFrame(candidates)
+        df.to_excel(output_file, index=False, engine='openpyxl')
+
+        print(f"候选评测集已保存到: {output_file}")
+        print(f"共生成 {len(candidates)} 条候选问题")
+        print("请人工审核并标注 is_valid、category、difficulty 列")
+
+        return df
+
+
+def create_empty_template(output_file: str = 'evaluation_set_template.xlsx'):
+    """
+    创建空的评测集模板
+
+    Args:
+        output_file: 输出文件名
+    """
+    template = pd.DataFrame({
+        'id': [1, 2, 3],
+        'query': ['示例问题1：年假有多少天', '示例问题2：怎么申请报销', '示例问题3：试用期多长'],
+        'gold_doc_id': ['doc_001', 'doc_002', 'doc_003'],
+        'gold_chunk_text': ['员工入职满一年可享受5天带薪年假', '报销流程：填写报销单后提交审批', '试用期一般为3个月'],
+        'category': ['请假', '报销', '入职'],
+        'difficulty': ['easy', 'medium', 'easy'],
+    })
+
+    template.to_excel(output_file, index=False, engine='openpyxl')
+    print(f"评测集模板已创建: {output_file}")
+    print("请按模板格式填写您的评测数据")
+
+
+if __name__ == '__main__':
+    import argparse
+
+    parser = argparse.ArgumentParser(description='评测集构建工具')
+    parser.add_argument('--action', choices=['template', 'build'], default='template',
+                        help='操作类型: template-创建空模板, build-从知识库构建')
+    parser.add_argument('--dataset-id', type=str, help='知识库ID（build模式需要）')
+    parser.add_argument('--output', type=str, default='evaluation_set.xlsx', help='输出文件名')
+
+    args = parser.parse_args()
+
+    if args.action == 'template':
+        create_empty_template(args.output)
+    elif args.action == 'build':
+        if not args.dataset_id:
+            print("错误: build模式需要指定 --dataset-id")
+            exit(1)
+        builder = EvaluationSetBuilder()
+        builder.build_candidate_set(args.dataset_id, args.output)
+\end{lstlisting}
+
+\subsection{脚本使用方法}
+
+构建工具提供两种使用方式，可以根据实际情况选择。
+
+\subsubsection{方式一：创建空白模板}
+
+如果你希望完全手工填写评测集，可以先生成一个包含标准格式的空白模板：
+
+\begin{lstlisting}[language=bash]
+python build_evaluation_set.py --action template --output my_evaluation_set.xlsx
+\end{lstlisting}
+
+执行后会生成一个 Excel 文件，其中包含示例数据和正确的列格式。你可以删除示例数据，按照格式填入自己的评测数据。
+
+\subsubsection{方式二：从知识库自动提取候选问题}
+
+如果知识库中的文档较多，推荐使用自动提取功能：
+
+\begin{lstlisting}[language=bash]
+python build_evaluation_set.py --action build --dataset-id 你的知识库ID --output candidates.xlsx
+\end{lstlisting}
+
+该命令会自动连接 Dify API，遍历知识库中的所有文档和分段，基于规则提取候选问题。提取的候选数据会保存到指定的 Excel 文件中。
+
+\subsection{人工审核与标注}
+
+自动提取的候选问题只是初步筛选的结果，不能直接用于评测。你需要进行人工审核，确保每条数据的质量。
+
+审核流程如下：
+
+\begin{enumerate}[leftmargin=2em]
+    \item 打开生成的候选评测集 Excel 文件
+
+    \item 逐条检查 \texttt{query} 列中的问题。判断标准是：这个问题是否像真实用户会问的？表述是否自然？如果不合适，在 \texttt{is\_valid} 列填写 N
+
+    \item 对于合适的问题，补充填写 \texttt{category}（业务分类）和 \texttt{difficulty}（难度等级）字段
+
+    \item 核对 \texttt{gold\_doc\_id} 是否正确。这是最重要的一步，标注错误会直接影响评测结果的准确性
+
+    \item 审核完成后，筛选出 \texttt{is\_valid = Y} 的记录，另存为最终的评测集文件
+\end{enumerate}
+
+\begin{tipbox}
+\textbf{标注规范（标注口径）}非常重要。在开始标注前，需要明确以下规则，确保标注的一致性：
+
+\begin{itemize}
+    \item \textbf{问题粒度}：一个问题应该对应一个明确的知识点，避免过于笼统或包含多个子问题
+    \item \textbf{命中判定}：只要 TopK 检索结果中包含 \texttt{gold\_doc\_id} 指定的文档，即判定为命中
+    \item \textbf{同义表达}：允许使用同义词或不同表述方式，但核心概念必须一致
+    \item \textbf{多答案情况}：如果一个问题有多个正确答案来源，可以用英文逗号分隔多个文档 ID
+\end{itemize}
+\end{tipbox}
+
+%=============================================================================
+\section{执行检索评测}
+%=============================================================================
+
+完成评测集构建后，就可以开始正式的检索评测了。本节提供完整的评测脚本代码，支持单次评测和批量对比评测。
+
+\subsection{核心评测模块}
+
+下面是核心评测脚本的完整代码。该脚本实现了以下功能：
+\begin{itemize}[leftmargin=2em]
+    \item 加载评测集数据
+    \item 调用 Dify API 执行检索
+    \item 计算各项评测指标（Recall@K、Precision@K、F1@K、MRR）
+    \item 保存详细结果和汇总指标
+\end{itemize}
+
+创建 \texttt{rag\_evaluator.py} 文件，内容如下：
+
+\begin{lstlisting}[language=python]
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+RAG 知识库检索评测工具
+支持 Dify 知识库的召回率、精确率、F1、MRR 等指标评测
+"""
+
+import os
+import json
+import time
+import requests
+import pandas as pd
+import numpy as np
+from typing import List, Dict, Tuple, Optional
+from dataclasses import dataclass, field
+from dotenv import load_dotenv
+from tqdm import tqdm
+from datetime import datetime
+
+# 加载环境变量
+load_dotenv()
+
+
+@dataclass
+class RetrievalResult:
+    """单次检索结果"""
+    query: str
+    retrieved_docs: List[Dict]  # 检索到的文档列表
+    gold_doc_ids: List[str]     # 标准答案文档ID列表
+    is_hit: bool = False        # 是否命中
+    hit_rank: int = -1          # 首次命中的排名（-1表示未命中）
+    latency_ms: float = 0       # 检索耗时（毫秒）
+
+
+@dataclass
+class EvaluationMetrics:
+    """评测指标"""
+    total_queries: int = 0
+    hit_count: int = 0
+    recall_at_k: float = 0.0
+    precision_at_k: float = 0.0
+    f1_at_k: float = 0.0
+    mrr: float = 0.0
+    avg_latency_ms: float = 0.0
+    hit_distribution: Dict[int, int] = field(default_factory=dict)  # 各排名命中数分布
+
+
+class DifyRetriever:
+    """Dify 知识库检索器"""
+
+    def __init__(self, api_base: str = None, api_key: str = None):
+        """
+        初始化检索器
+
+        Args:
+            api_base: API基础URL
+            api_key: API密钥
+        """
+        self.api_base = api_base or os.getenv('DIFY_API_BASE', 'https://api.dify.ai/v1')
+        self.api_key = api_key or os.getenv('DIFY_API_KEY')
+
+        if not self.api_key:
+            raise ValueError("未配置 DIFY_API_KEY，请在 .env 文件中设置")
+
+        self.headers = {
+            'Authorization': f'Bearer {self.api_key}',
+            'Content-Type': 'application/json'
+        }
+
+    def retrieve(self, dataset_id: str, query: str, top_k: int = 5,
+                 score_threshold: float = 0.0) -> Tuple[List[Dict], float]:
+        """
+        执行检索
+
+        Args:
+            dataset_id: 知识库ID
+            query: 查询问题
+            top_k: 返回结果数量
+            score_threshold: 分数阈值
+
+        Returns:
+            (检索结果列表, 耗时毫秒)
+        """
+        url = f"{self.api_base}/datasets/{dataset_id}/retrieve"
+
+        payload = {
+            "query": query,
+            "retrieval_model": {
+                "search_method": "semantic_search",  # 语义检索
+                "reranking_enable": False,  # 是否启用重排
+                "top_k": top_k,
+                "score_threshold_enabled": score_threshold > 0,
+                "score_threshold": score_threshold
+            }
+        }
+
+        start_time = time.time()
+
+        try:
+            response = requests.post(url, headers=self.headers, json=payload, timeout=30)
+            latency_ms = (time.time() - start_time) * 1000
+
+            if response.status_code != 200:
+                print(f"检索失败: {response.status_code} - {response.text}")
+                return [], latency_ms
+
+            data = response.json()
+            records = data.get('records', [])
+
+            # 标准化结果格式
+            results = []
+            for i, record in enumerate(records):
+                results.append({
+                    'rank': i + 1,
+                    'document_id': record.get('segment', {}).get('document_id', ''),
+                    'segment_id': record.get('segment', {}).get('id', ''),
+                    'content': record.get('segment', {}).get('content', ''),
+                    'score': record.get('score', 0),
+                    'document_name': record.get('segment', {}).get('document', {}).get('name', ''),
+                })
+
+            return results, latency_ms
+
+        except Exception as e:
+            latency_ms = (time.time() - start_time) * 1000
+            print(f"检索异常: {str(e)}")
+            return [], latency_ms
+
+    def retrieve_with_rerank(self, dataset_id: str, query: str, top_k: int = 5,
+                             rerank_model: str = "bge-reranker-base") -> Tuple[List[Dict], float]:
+        """
+        执行带重排的检索
+
+        Args:
+            dataset_id: 知识库ID
+            query: 查询问题
+            top_k: 返回结果数量
+            rerank_model: 重排模型名称
+
+        Returns:
+            (检索结果列表, 耗时毫秒)
+        """
+        url = f"{self.api_base}/datasets/{dataset_id}/retrieve"
+
+        payload = {
+            "query": query,
+            "retrieval_model": {
+                "search_method": "semantic_search",
+                "reranking_enable": True,
+                "reranking_model": {
+                    "reranking_provider_name": "local",
+                    "reranking_model_name": rerank_model
+                },
+                "top_k": top_k,
+                "score_threshold_enabled": False
+            }
+        }
+
+        start_time = time.time()
+
+        try:
+            response = requests.post(url, headers=self.headers, json=payload, timeout=60)
+            latency_ms = (time.time() - start_time) * 1000
+
+            if response.status_code != 200:
+                print(f"检索失败: {response.status_code} - {response.text}")
+                return [], latency_ms
+
+            data = response.json()
+            records = data.get('records', [])
+
+            results = []
+            for i, record in enumerate(records):
+                results.append({
+                    'rank': i + 1,
+                    'document_id': record.get('segment', {}).get('document_id', ''),
+                    'segment_id': record.get('segment', {}).get('id', ''),
+                    'content': record.get('segment', {}).get('content', ''),
+                    'score': record.get('score', 0),
+                    'document_name': record.get('segment', {}).get('document', {}).get('name', ''),
+                })
+
+            return results, latency_ms
+
+        except Exception as e:
+            latency_ms = (time.time() - start_time) * 1000
+            print(f"检索异常: {str(e)}")
+            return [], latency_ms
+
+
+class RAGEvaluator:
+    """RAG 检索评测器"""
+
+    def __init__(self, retriever: DifyRetriever):
+        """
+        初始化评测器
+
+        Args:
+            retriever: 检索器实例
+        """
+        self.retriever = retriever
+        self.results: List[RetrievalResult] = []
+
+    def load_evaluation_set(self, file_path: str) -> pd.DataFrame:
+        """
+        加载评测集
+
+        Args:
+            file_path: 评测集文件路径（支持xlsx、csv）
+
+        Returns:
+            评测集DataFrame
+        """
+        if file_path.endswith('.xlsx'):
+            df = pd.read_excel(file_path, engine='openpyxl')
+        elif file_path.endswith('.csv'):
+            df = pd.read_csv(file_path)
+        else:
+            raise ValueError(f"不支持的文件格式: {file_path}")
+
+        # 验证必要列
+        required_columns = ['query', 'gold_doc_id']
+        for col in required_columns:
+            if col not in df.columns:
+                raise ValueError(f"评测集缺少必要列: {col}")
+
+        print(f"加载评测集: {len(df)} 条记录")
+        return df
+
+    def evaluate(self, dataset_id: str, evaluation_set: pd.DataFrame,
+                 top_k: int = 5, use_rerank: bool = False,
+                 rerank_model: str = None) -> EvaluationMetrics:
+        """
+        执行评测
+
+        Args:
+            dataset_id: 知识库ID
+            evaluation_set: 评测集DataFrame
+            top_k: TopK值
+            use_rerank: 是否使用重排
+            rerank_model: 重排模型（use_rerank=True时需要）
+
+        Returns:
+            评测指标
+        """
+        self.results = []
+        hit_count = 0
+        total_rr = 0  # 用于计算MRR
+        total_latency = 0
+        hit_distribution = {i: 0 for i in range(1, top_k + 1)}
+
+        print(f"\n开始评测...")
+        print(f"知识库ID: {dataset_id}")
+        print(f"TopK: {top_k}")
+        print(f"使用重排: {use_rerank}")
+        print(f"评测集大小: {len(evaluation_set)}")
+        print("-" * 50)
+
+        for idx, row in tqdm(evaluation_set.iterrows(), total=len(evaluation_set), desc="评测进度"):
+            query = str(row['query'])
+
+            # 处理gold_doc_id（可能是单个或多个，用逗号分隔）
+            gold_doc_ids = [doc_id.strip() for doc_id in str(row['gold_doc_id']).split(',')]
+
+            # 执行检索
+            if use_rerank and rerank_model:
+                retrieved_docs, latency = self.retriever.retrieve_with_rerank(
+                    dataset_id, query, top_k, rerank_model
+                )
+            else:
+                retrieved_docs, latency = self.retriever.retrieve(dataset_id, query, top_k)
+
+            total_latency += latency
+
+            # 判断是否命中
+            is_hit = False
+            hit_rank = -1
+
+            for doc in retrieved_docs:
+                doc_id = doc.get('document_id', '')
+                if doc_id in gold_doc_ids:
+                    is_hit = True
+                    hit_rank = doc['rank']
+                    break
+
+            if is_hit:
+                hit_count += 1
+                total_rr += 1.0 / hit_rank
+                hit_distribution[hit_rank] = hit_distribution.get(hit_rank, 0) + 1
+
+            # 记录结果
+            result = RetrievalResult(
+                query=query,
+                retrieved_docs=retrieved_docs,
+                gold_doc_ids=gold_doc_ids,
+                is_hit=is_hit,
+                hit_rank=hit_rank,
+                latency_ms=latency
+            )
+            self.results.append(result)
+
+            # 避免请求过快
+            time.sleep(0.1)
+
+        # 计算指标
+        total_queries = len(evaluation_set)
+        recall = hit_count / total_queries if total_queries > 0 else 0
+        precision = hit_count / (top_k * total_queries) if total_queries > 0 else 0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+        mrr = total_rr / total_queries if total_queries > 0 else 0
+        avg_latency = total_latency / total_queries if total_queries > 0 else 0
+
+        metrics = EvaluationMetrics(
+            total_queries=total_queries,
+            hit_count=hit_count,
+            recall_at_k=recall,
+            precision_at_k=precision,
+            f1_at_k=f1,
+            mrr=mrr,
+            avg_latency_ms=avg_latency,
+            hit_distribution=hit_distribution
+        )
+
+        return metrics
+
+    def get_detailed_results(self) -> pd.DataFrame:
+        """
+        获取详细结果
+
+        Returns:
+            详细结果DataFrame
+        """
+        data = []
+        for r in self.results:
+            data.append({
+                'query': r.query,
+                'gold_doc_ids': ','.join(r.gold_doc_ids),
+                'is_hit': r.is_hit,
+                'hit_rank': r.hit_rank if r.hit_rank > 0 else 'N/A',
+                'latency_ms': round(r.latency_ms, 2),
+                'top1_doc_id': r.retrieved_docs[0]['document_id'] if r.retrieved_docs else '',
+                'top1_score': round(r.retrieved_docs[0]['score'], 4) if r.retrieved_docs else '',
+                'top1_content': r.retrieved_docs[0]['content'][:100] if r.retrieved_docs else '',
+            })
+        return pd.DataFrame(data)
+
+    def save_results(self, metrics: EvaluationMetrics, output_dir: str,
+                     config_name: str = "default"):
+        """
+        保存评测结果
+
+        Args:
+            metrics: 评测指标
+            output_dir: 输出目录
+            config_name: 配置名称（用于区分不同实验）
+        """
+        os.makedirs(output_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # 保存指标摘要
+        summary = {
+            'config_name': config_name,
+            'timestamp': timestamp,
+            'total_queries': metrics.total_queries,
+            'hit_count': metrics.hit_count,
+            'recall_at_k': round(metrics.recall_at_k, 4),
+            'precision_at_k': round(metrics.precision_at_k, 4),
+            'f1_at_k': round(metrics.f1_at_k, 4),
+            'mrr': round(metrics.mrr, 4),
+            'avg_latency_ms': round(metrics.avg_latency_ms, 2),
+            'hit_distribution': metrics.hit_distribution
+        }
+
+        summary_file = os.path.join(output_dir, f"metrics_{config_name}_{timestamp}.json")
+        with open(summary_file, 'w', encoding='utf-8') as f:
+            json.dump(summary, f, ensure_ascii=False, indent=2)
+        print(f"指标摘要已保存: {summary_file}")
+
+        # 保存详细结果
+        detailed_df = self.get_detailed_results()
+        detailed_file = os.path.join(output_dir, f"detailed_{config_name}_{timestamp}.xlsx")
+        detailed_df.to_excel(detailed_file, index=False, engine='openpyxl')
+        print(f"详细结果已保存: {detailed_file}")
+
+        return summary_file, detailed_file
+
+
+def print_metrics(metrics: EvaluationMetrics, config_name: str = ""):
+    """
+    打印评测指标
+
+    Args:
+        metrics: 评测指标
+        config_name: 配置名称
+    """
+    print("\n" + "=" * 50)
+    if config_name:
+        print(f"配置: {config_name}")
+    print("=" * 50)
+    print(f"总查询数:      {metrics.total_queries}")
+    print(f"命中数:        {metrics.hit_count}")
+    print(f"Recall@K:      {metrics.recall_at_k:.4f} ({metrics.recall_at_k*100:.2f}%)")
+    print(f"Precision@K:   {metrics.precision_at_k:.4f} ({metrics.precision_at_k*100:.2f}%)")
+    print(f"F1@K:          {metrics.f1_at_k:.4f}")
+    print(f"MRR:           {metrics.mrr:.4f}")
+    print(f"平均延迟:      {metrics.avg_latency_ms:.2f} ms")
+    print("-" * 50)
+    print("命中排名分布:")
+    for rank, count in sorted(metrics.hit_distribution.items()):
+        if count > 0:
+            print(f"  Rank {rank}: {count} ({count/metrics.total_queries*100:.1f}%)")
+    print("=" * 50)
+
+
+if __name__ == '__main__':
+    import argparse
+
+    parser = argparse.ArgumentParser(description='RAG 知识库检索评测工具')
+    parser.add_argument('--dataset-id', type=str, required=True, help='知识库ID')
+    parser.add_argument('--eval-set', type=str, required=True, help='评测集文件路径')
+    parser.add_argument('--top-k', type=int, default=5, help='TopK值')
+    parser.add_argument('--use-rerank', action='store_true', help='是否使用重排')
+    parser.add_argument('--rerank-model', type=str, default='bge-reranker-base', help='重排模型')
+    parser.add_argument('--output-dir', type=str, default='./results', help='输出目录')
+    parser.add_argument('--config-name', type=str, default='default', help='配置名称')
+
+    args = parser.parse_args()
+
+    # 初始化
+    retriever = DifyRetriever()
+    evaluator = RAGEvaluator(retriever)
+
+    # 加载评测集
+    eval_set = evaluator.load_evaluation_set(args.eval_set)
+
+    # 执行评测
+    metrics = evaluator.evaluate(
+        dataset_id=args.dataset_id,
+        evaluation_set=eval_set,
+        top_k=args.top_k,
+        use_rerank=args.use_rerank,
+        rerank_model=args.rerank_model if args.use_rerank else None
+    )
+
+    # 打印结果
+    print_metrics(metrics, args.config_name)
+
+    # 保存结果
+    evaluator.save_results(metrics, args.output_dir, args.config_name)
+\end{lstlisting}
+
+\subsection{运行评测}
+
+脚本支持多种参数配置，可以灵活地进行不同场景的评测。
+
+\subsubsection{基础评测命令}
+
+最简单的评测方式是指定知识库 ID、评测集路径和 TopK 值：
+
+\begin{lstlisting}[language=bash]
+python rag_evaluator.py \
+    --dataset-id 你的知识库ID \
+    --eval-set evaluation_set.xlsx \
+    --top-k 5 \
+    --config-name "general_chunk" \
+    --output-dir ./results
+\end{lstlisting}
+
+参数说明：
+\begin{itemize}[leftmargin=2em]
+    \item \texttt{--dataset-id}：要评测的知识库 ID
+    \item \texttt{--eval-set}：评测集文件路径
+    \item \texttt{--top-k}：检索返回的结果数量，常用值为 3、5、10
+    \item \texttt{--config-name}：本次评测的配置名称，用于区分不同实验
+    \item \texttt{--output-dir}：结果输出目录
+\end{itemize}
+
+评测完成后，结果会保存在 \texttt{./results} 目录中，包括指标汇总（JSON 格式）和详细结果（Excel 格式）。
+
+\subsubsection{启用重排器的评测}
+
+如果你想评估重排器（Reranker）对检索效果的提升，可以添加 \texttt{--use-rerank} 参数：
+
+\begin{lstlisting}[language=bash]
+python rag_evaluator.py \
+    --dataset-id 你的知识库ID \
+    --eval-set evaluation_set.xlsx \
+    --top-k 5 \
+    --use-rerank \
+    --rerank-model bge-reranker-base \
+    --config-name "general_with_rerank" \
+    --output-dir ./results
+\end{lstlisting}
+
+通过对比启用和不启用重排器的评测结果，可以量化重排器带来的效果提升。
+
+%=============================================================================
+\section{批量对比评测}
+%=============================================================================
+
+在实际应用中，我们通常需要对比多种配置的效果。例如，对比三种分块策略（通用、父子、QA），同时测试多个 TopK 值（3、5、10），还要看重排器的影响。如果逐个运行，效率很低。
+
+本节提供的批量评测脚本可以自动遍历所有配置组合，一次性完成全部评测，并生成汇总对比结果。
+
+\subsection{批量评测脚本}
+
+创建 \texttt{batch\_evaluation.py} 文件，内容如下：
+
+\begin{lstlisting}[language=python]
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+批量对比评测脚本
+支持多知识库、多TopK、是否重排等多维度对比
+"""
+
+import os
+import json
+import pandas as pd
+from datetime import datetime
+from dotenv import load_dotenv
+from rag_evaluator import DifyRetriever, RAGEvaluator, print_metrics, EvaluationMetrics
+
+load_dotenv()
+
+
+def run_batch_evaluation(config: dict) -> dict:
+    """
+    运行批量评测
+
+    Args:
+        config: 评测配置，包含：
+            - evaluation_set_path: 评测集路径
+            - datasets: 知识库配置列表
+            - top_k_list: TopK值列表
+            - use_rerank_options: 是否使用重排选项列表
+            - output_dir: 输出目录
+
+    Returns:
+        所有评测结果
+    """
+    retriever = DifyRetriever()
+    evaluator = RAGEvaluator(retriever)
+
+    # 加载评测集
+    eval_set = evaluator.load_evaluation_set(config['evaluation_set_path'])
+
+    all_results = []
+
+    # 遍历所有配置组合
+    for dataset_config in config['datasets']:
+        dataset_id = dataset_config['id']
+        dataset_name = dataset_config['name']
+
+        for top_k in config['top_k_list']:
+            for use_rerank in config['use_rerank_options']:
+                config_name = f"{dataset_name}_top{top_k}"
+                if use_rerank:
+                    config_name += "_rerank"
+
+                print(f"\n{'='*60}")
+                print(f"正在评测: {config_name}")
+                print(f"{'='*60}")
+
+                # 执行评测
+                metrics = evaluator.evaluate(
+                    dataset_id=dataset_id,
+                    evaluation_set=eval_set,
+                    top_k=top_k,
+                    use_rerank=use_rerank,
+                    rerank_model=config.get('rerank_model', 'bge-reranker-base')
+                )
+
+                # 打印结果
+                print_metrics(metrics, config_name)
+
+                # 保存单次结果
+                evaluator.save_results(metrics, config['output_dir'], config_name)
+
+                # 收集结果
+                all_results.append({
+                    'config_name': config_name,
+                    'dataset_name': dataset_name,
+                    'dataset_id': dataset_id,
+                    'top_k': top_k,
+                    'use_rerank': use_rerank,
+                    'total_queries': metrics.total_queries,
+                    'hit_count': metrics.hit_count,
+                    'recall': metrics.recall_at_k,
+                    'precision': metrics.precision_at_k,
+                    'f1': metrics.f1_at_k,
+                    'mrr': metrics.mrr,
+                    'avg_latency_ms': metrics.avg_latency_ms
+                })
+
+    # 保存汇总结果
+    summary_df = pd.DataFrame(all_results)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    summary_file = os.path.join(config['output_dir'], f"summary_{timestamp}.xlsx")
+    summary_df.to_excel(summary_file, index=False, engine='openpyxl')
+    print(f"\n汇总结果已保存: {summary_file}")
+
+    # 保存JSON格式
+    json_file = os.path.join(config['output_dir'], f"summary_{timestamp}.json")
+    with open(json_file, 'w', encoding='utf-8') as f:
+        json.dump(all_results, f, ensure_ascii=False, indent=2)
+    print(f"JSON结果已保存: {json_file}")
+
+    return all_results
+
+
+if __name__ == '__main__':
+    # 评测配置
+    config = {
+        # 评测集路径
+        'evaluation_set_path': 'evaluation_set.xlsx',
+
+        # 要对比的知识库（不同分块策略）
+        'datasets': [
+            {
+                'id': os.getenv('DATASET_ID_GENERAL', 'your_general_dataset_id'),
+                'name': 'general'  # 通用分块
+            },
+            {
+                'id': os.getenv('DATASET_ID_PARENT_CHILD', 'your_parent_child_dataset_id'),
+                'name': 'parent_child'  # 父子分块
+            },
+            {
+                'id': os.getenv('DATASET_ID_QA', 'your_qa_dataset_id'),
+                'name': 'qa'  # QA分块
+            },
+        ],
+
+        # TopK值列表
+        'top_k_list': [3, 5, 10],
+
+        # 是否使用重排选项
+        'use_rerank_options': [False, True],
+
+        # 重排模型
+        'rerank_model': 'bge-reranker-base',
+
+        # 输出目录
+        'output_dir': './results'
+    }
+
+    # 运行批量评测
+    results = run_batch_evaluation(config)
+
+    # 打印最终汇总
+    print("\n" + "="*80)
+    print("评测完成！最终汇总：")
+    print("="*80)
+
+    df = pd.DataFrame(results)
+    print(df.to_string(index=False))
+\end{lstlisting}
+
+%=============================================================================
+\section{可视化与报告生成}
+%=============================================================================
+
+数据表格虽然包含了完整的评测结果，但不够直观。通过可视化图表，可以更清晰地展示不同配置之间的效果差异，便于做出决策。
+
+本节提供的可视化脚本可以生成以下图表：
+\begin{itemize}[leftmargin=2em]
+    \item \textbf{召回率对比柱状图}：直观展示不同分块策略在各 TopK 值下的召回率
+    \item \textbf{指标热力图}：以矩阵形式展示所有配置组合的评测结果
+    \item \textbf{延迟对比图}：展示不同配置的检索响应时间
+    \item \textbf{综合雷达图}：在一张图中对比多个维度的指标
+    \item \textbf{Markdown 报告}：自动生成包含结论建议的文字报告
+\end{itemize}
+
+\subsection{可视化脚本代码}
+
+创建 \texttt{visualization.py} 文件，内容如下：
+
+\begin{lstlisting}[language=python]
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+评测结果可视化
+生成对比图表和分析报告
+"""
+
+import os
+import json
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from datetime import datetime
+
+# 设置中文字体
+plt.rcParams['font.sans-serif'] = ['SimHei', 'Arial Unicode MS', 'DejaVu Sans']
+plt.rcParams['axes.unicode_minus'] = False
+
+# 设置绘图风格
+sns.set_style("whitegrid")
+plt.rcParams['figure.figsize'] = (12, 8)
+plt.rcParams['figure.dpi'] = 150
+
+
+def load_summary_data(json_file: str) -> pd.DataFrame:
+    """
+    加载汇总数据
+
+    Args:
+        json_file: JSON格式的汇总文件路径
+
+    Returns:
+        DataFrame
+    """
+    with open(json_file, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    return pd.DataFrame(data)
+
+
+def plot_recall_comparison(df: pd.DataFrame, output_dir: str):
+    """
+    绘制召回率对比图
+
+    Args:
+        df: 评测结果DataFrame
+        output_dir: 输出目录
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+    # 图1: 不同分块策略的召回率对比（按TopK分组）
+    ax1 = axes[0]
+
+    # 准备数据：不使用重排的结果
+    df_no_rerank = df[df['use_rerank'] == False]
+
+    pivot_data = df_no_rerank.pivot(index='top_k', columns='dataset_name', values='recall')
+
+    x = np.arange(len(pivot_data.index))
+    width = 0.25
+
+    colors = ['#2ecc71', '#3498db', '#e74c3c']
+
+    for i, col in enumerate(pivot_data.columns):
+        bars = ax1.bar(x + i*width, pivot_data[col], width, label=col, color=colors[i % len(colors)])
+        # 添加数值标签
+        for bar, val in zip(bars, pivot_data[col]):
+            ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01,
+                    f'{val:.2%}', ha='center', va='bottom', fontsize=9)
+
+    ax1.set_xlabel('Top K', fontsize=12)
+    ax1.set_ylabel('Recall@K', fontsize=12)
+    ax1.set_title('不同分块策略的召回率对比（无重排）', fontsize=14, fontweight='bold')
+    ax1.set_xticks(x + width)
+    ax1.set_xticklabels([f'Top{k}' for k in pivot_data.index])
+    ax1.legend(title='分块策略')
+    ax1.set_ylim(0, 1.1)
+
+    # 图2: 重排前后对比
+    ax2 = axes[1]
+
+    # 选择 Top5 的数据进行重排前后对比
+    df_top5 = df[df['top_k'] == 5]
+
+    datasets = df_top5['dataset_name'].unique()
+    x = np.arange(len(datasets))
+    width = 0.35
+
+    recall_no_rerank = df_top5[df_top5['use_rerank'] == False].set_index('dataset_name')['recall']
+    recall_with_rerank = df_top5[df_top5['use_rerank'] == True].set_index('dataset_name')['recall']
+
+    bars1 = ax2.bar(x - width/2, [recall_no_rerank.get(d, 0) for d in datasets],
+                    width, label='无重排', color='#3498db')
+    bars2 = ax2.bar(x + width/2, [recall_with_rerank.get(d, 0) for d in datasets],
+                    width, label='有重排', color='#e74c3c')
+
+    # 添加数值标签
+    for bars in [bars1, bars2]:
+        for bar in bars:
+            ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01,
+                    f'{bar.get_height():.2%}', ha='center', va='bottom', fontsize=9)
+
+    ax2.set_xlabel('分块策略', fontsize=12)
+    ax2.set_ylabel('Recall@5', fontsize=12)
+    ax2.set_title('重排前后召回率对比（Top5）', fontsize=14, fontweight='bold')
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(datasets)
+    ax2.legend()
+    ax2.set_ylim(0, 1.1)
+
+    plt.tight_layout()
+
+    output_file = os.path.join(output_dir, 'recall_comparison.png')
+    plt.savefig(output_file, bbox_inches='tight')
+    plt.close()
+    print(f"召回率对比图已保存: {output_file}")
+
+
+def plot_metrics_heatmap(df: pd.DataFrame, output_dir: str):
+    """
+    绘制指标热力图
+
+    Args:
+        df: 评测结果DataFrame
+        output_dir: 输出目录
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+    # 热力图1: Recall
+    ax1 = axes[0]
+    df_no_rerank = df[df['use_rerank'] == False]
+    pivot_recall = df_no_rerank.pivot(index='dataset_name', columns='top_k', values='recall')
+
+    sns.heatmap(pivot_recall, annot=True, fmt='.2%', cmap='YlGnBu', ax=ax1,
+                vmin=0, vmax=1, cbar_kws={'label': 'Recall'})
+    ax1.set_title('召回率热力图（无重排）', fontsize=14, fontweight='bold')
+    ax1.set_xlabel('Top K')
+    ax1.set_ylabel('分块策略')
+
+    # 热力图2: MRR
+    ax2 = axes[1]
+    pivot_mrr = df_no_rerank.pivot(index='dataset_name', columns='top_k', values='mrr')
+
+    sns.heatmap(pivot_mrr, annot=True, fmt='.3f', cmap='YlOrRd', ax=ax2,
+                vmin=0, vmax=1, cbar_kws={'label': 'MRR'})
+    ax2.set_title('MRR热力图（无重排）', fontsize=14, fontweight='bold')
+    ax2.set_xlabel('Top K')
+    ax2.set_ylabel('分块策略')
+
+    plt.tight_layout()
+
+    output_file = os.path.join(output_dir, 'metrics_heatmap.png')
+    plt.savefig(output_file, bbox_inches='tight')
+    plt.close()
+    print(f"指标热力图已保存: {output_file}")
+
+
+def plot_latency_comparison(df: pd.DataFrame, output_dir: str):
+    """
+    绘制延迟对比图
+
+    Args:
+        df: 评测结果DataFrame
+        output_dir: 输出目录
+    """
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    # 按配置名排序
+    df_sorted = df.sort_values(['dataset_name', 'top_k', 'use_rerank'])
+
+    # 创建配置标签
+    labels = []
+    for _, row in df_sorted.iterrows():
+        rerank_str = '+rerank' if row['use_rerank'] else ''
+        labels.append(f"{row['dataset_name']}\nTop{row['top_k']}{rerank_str}")
+
+    colors = ['#3498db' if not r else '#e74c3c' for r in df_sorted['use_rerank']]
+
+    bars = ax.barh(range(len(labels)), df_sorted['avg_latency_ms'], color=colors)
+
+    ax.set_yticks(range(len(labels)))
+    ax.set_yticklabels(labels, fontsize=9)
+    ax.set_xlabel('平均延迟 (ms)', fontsize=12)
+    ax.set_title('检索延迟对比', fontsize=14, fontweight='bold')
+
+    # 添加数值标签
+    for bar, val in zip(bars, df_sorted['avg_latency_ms']):
+        ax.text(bar.get_width() + 5, bar.get_y() + bar.get_height()/2,
+                f'{val:.0f}ms', ha='left', va='center', fontsize=9)
+
+    # 添加图例
+    from matplotlib.patches import Patch
+    legend_elements = [Patch(facecolor='#3498db', label='无重排'),
+                      Patch(facecolor='#e74c3c', label='有重排')]
+    ax.legend(handles=legend_elements, loc='lower right')
+
+    plt.tight_layout()
+
+    output_file = os.path.join(output_dir, 'latency_comparison.png')
+    plt.savefig(output_file, bbox_inches='tight')
+    plt.close()
+    print(f"延迟对比图已保存: {output_file}")
+
+
+def plot_comprehensive_comparison(df: pd.DataFrame, output_dir: str):
+    """
+    绘制综合对比图（类似用户提供的示例图）
+
+    Args:
+        df: 评测结果DataFrame
+        output_dir: 输出目录
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(14, 12))
+
+    # 选择不使用重排的数据
+    df_no_rerank = df[df['use_rerank'] == False]
+
+    # 图1: 召回率折线图
+    ax1 = axes[0, 0]
+    for dataset in df_no_rerank['dataset_name'].unique():
+        data = df_no_rerank[df_no_rerank['dataset_name'] == dataset]
+        ax1.plot(data['top_k'], data['recall'], marker='o', linewidth=2,
+                markersize=8, label=dataset)
+    ax1.set_xlabel('Top K', fontsize=12)
+    ax1.set_ylabel('Recall@K', fontsize=12)
+    ax1.set_title('召回率随TopK变化趋势', fontsize=14, fontweight='bold')
+    ax1.legend()
+    ax1.set_ylim(0, 1.05)
+    ax1.grid(True, alpha=0.3)
+
+    # 图2: F1分数对比
+    ax2 = axes[0, 1]
+    pivot_f1 = df_no_rerank.pivot(index='top_k', columns='dataset_name', values='f1')
+    pivot_f1.plot(kind='bar', ax=ax2, color=['#2ecc71', '#3498db', '#e74c3c'])
+    ax2.set_xlabel('Top K', fontsize=12)
+    ax2.set_ylabel('F1 Score', fontsize=12)
+    ax2.set_title('F1分数对比', fontsize=14, fontweight='bold')
+    ax2.legend(title='分块策略')
+    ax2.set_xticklabels([f'Top{k}' for k in pivot_f1.index], rotation=0)
+
+    # 图3: MRR对比
+    ax3 = axes[1, 0]
+    pivot_mrr = df_no_rerank.pivot(index='top_k', columns='dataset_name', values='mrr')
+    pivot_mrr.plot(kind='bar', ax=ax3, color=['#9b59b6', '#f39c12', '#1abc9c'])
+    ax3.set_xlabel('Top K', fontsize=12)
+    ax3.set_ylabel('MRR', fontsize=12)
+    ax3.set_title('MRR (Mean Reciprocal Rank) 对比', fontsize=14, fontweight='bold')
+    ax3.legend(title='分块策略')
+    ax3.set_xticklabels([f'Top{k}' for k in pivot_mrr.index], rotation=0)
+
+    # 图4: 综合雷达图（选择Top5数据）
+    ax4 = axes[1, 1]
+
+    df_top5 = df_no_rerank[df_no_rerank['top_k'] == 5]
+
+    categories = ['Recall', 'Precision', 'F1', 'MRR']
+
+    # 计算角度
+    angles = np.linspace(0, 2*np.pi, len(categories), endpoint=False).tolist()
+    angles += angles[:1]  # 闭合
+
+    ax4 = fig.add_subplot(2, 2, 4, polar=True)
+
+    colors = ['#2ecc71', '#3498db', '#e74c3c']
+    for i, (_, row) in enumerate(df_top5.iterrows()):
+        values = [row['recall'], row['precision'], row['f1'], row['mrr']]
+        values += values[:1]
+        ax4.plot(angles, values, 'o-', linewidth=2, color=colors[i % len(colors)],
+                label=row['dataset_name'])
+        ax4.fill(angles, values, alpha=0.1, color=colors[i % len(colors)])
+
+    ax4.set_xticks(angles[:-1])
+    ax4.set_xticklabels(categories)
+    ax4.set_title('Top5综合指标雷达图', fontsize=14, fontweight='bold', pad=20)
+    ax4.legend(loc='upper right', bbox_to_anchor=(1.3, 1.0))
+
+    plt.tight_layout()
+
+    output_file = os.path.join(output_dir, 'comprehensive_comparison.png')
+    plt.savefig(output_file, bbox_inches='tight')
+    plt.close()
+    print(f"综合对比图已保存: {output_file}")
+
+
+def generate_report(df: pd.DataFrame, output_dir: str):
+    """
+    生成文字报告
+
+    Args:
+        df: 评测结果DataFrame
+        output_dir: 输出目录
+    """
+    df_no_rerank = df[df['use_rerank'] == False]
+    df_with_rerank = df[df['use_rerank'] == True]
+
+    # 找出最佳配置
+    best_recall_idx = df_no_rerank['recall'].idxmax()
+    best_recall_config = df_no_rerank.loc[best_recall_idx]
+
+    best_mrr_idx = df_no_rerank['mrr'].idxmax()
+    best_mrr_config = df_no_rerank.loc[best_mrr_idx]
+
+    report = f"""
+# RAG 知识库检索评测报告
+
+生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+## 评测概要
+
+- 总评测配置数: {len(df)}
+- 评测查询数: {df['total_queries'].iloc[0]}
+- 分块策略: {', '.join(df['dataset_name'].unique())}
+- TopK范围: {', '.join([f'Top{k}' for k in sorted(df['top_k'].unique())])}
+
+## 最佳配置
+
+### 召回率最高配置
+- 配置: {best_recall_config['dataset_name']} + Top{best_recall_config['top_k']}
+- Recall@K: {best_recall_config['recall']:.2%}
+- MRR: {best_recall_config['mrr']:.4f}
+
+### MRR最高配置
+- 配置: {best_mrr_config['dataset_name']} + Top{best_mrr_config['top_k']}
+- Recall@K: {best_mrr_config['recall']:.2%}
+- MRR: {best_mrr_config['mrr']:.4f}
+
+## 分块策略对比（Top5, 无重排）
+
+| 分块策略 | Recall@5 | Precision@5 | F1@5 | MRR | 平均延迟 |
+|---------|----------|-------------|------|-----|---------|
+"""
+
+    df_top5_no_rerank = df_no_rerank[df_no_rerank['top_k'] == 5]
+    for _, row in df_top5_no_rerank.iterrows():
+        report += f"| {row['dataset_name']} | {row['recall']:.2%} | {row['precision']:.4f} | {row['f1']:.4f} | {row['mrr']:.4f} | {row['avg_latency_ms']:.0f}ms |\n"
+
+    # 重排效果分析
+    if len(df_with_rerank) > 0:
+        report += """
+## 重排效果分析（Top5）
+
+| 分块策略 | 无重排Recall | 有重排Recall | 提升 |
+|---------|-------------|-------------|------|
+"""
+        for dataset in df['dataset_name'].unique():
+            no_rerank = df_no_rerank[(df_no_rerank['dataset_name'] == dataset) & (df_no_rerank['top_k'] == 5)]
+            with_rerank = df_with_rerank[(df_with_rerank['dataset_name'] == dataset) & (df_with_rerank['top_k'] == 5)]
+
+            if len(no_rerank) > 0 and len(with_rerank) > 0:
+                recall_no = no_rerank['recall'].iloc[0]
+                recall_with = with_rerank['recall'].iloc[0]
+                improvement = recall_with - recall_no
+                report += f"| {dataset} | {recall_no:.2%} | {recall_with:.2%} | {improvement:+.2%} |\n"
+
+    report += """
+## 结论与建议
+
+"""
+
+    # 自动生成建议
+    datasets = df_no_rerank['dataset_name'].unique()
+    recall_by_dataset = df_no_rerank.groupby('dataset_name')['recall'].mean()
+    best_dataset = recall_by_dataset.idxmax()
+
+    report += f"1. **推荐分块策略**: {best_dataset}（平均召回率最高: {recall_by_dataset[best_dataset]:.2%}）\n\n"
+
+    # TopK建议
+    recall_by_topk = df_no_rerank.groupby('top_k')['recall'].mean()
+    best_topk = recall_by_topk.idxmax()
+    report += f"2. **推荐TopK值**: Top{best_topk}（该TopK下平均召回率: {recall_by_topk[best_topk]:.2%}）\n\n"
+
+    # 重排建议
+    if len(df_with_rerank) > 0:
+        avg_improvement = (df_with_rerank['recall'].mean() - df_no_rerank[df_no_rerank['top_k'].isin(df_with_rerank['top_k'].unique())]['recall'].mean())
+        if avg_improvement > 0.05:
+            report += f"3. **重排效果显著**: 平均提升 {avg_improvement:.2%}，建议启用重排器\n\n"
+        else:
+            report += f"3. **重排效果有限**: 平均提升仅 {avg_improvement:.2%}，可根据延迟要求决定是否启用\n\n"
+
+    report += """
+---
+报告由 RAG 评测工具自动生成
+"""
+
+    # 保存报告
+    report_file = os.path.join(output_dir, f"evaluation_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md")
+    with open(report_file, 'w', encoding='utf-8') as f:
+        f.write(report)
+    print(f"评测报告已保存: {report_file}")
+
+    return report
+
+
+def main(summary_json_path: str, output_dir: str = './results'):
+    """
+    主函数：生成所有可视化图表和报告
+
+    Args:
+        summary_json_path: 汇总JSON文件路径
+        output_dir: 输出目录
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 加载数据
+    df = load_summary_data(summary_json_path)
+
+    print("开始生成可视化图表...")
+
+    # 生成各类图表
+    plot_recall_comparison(df, output_dir)
+    plot_metrics_heatmap(df, output_dir)
+    plot_latency_comparison(df, output_dir)
+    plot_comprehensive_comparison(df, output_dir)
+
+    # 生成文字报告
+    report = generate_report(df, output_dir)
+
+    print("\n所有图表和报告已生成完成！")
+    print(f"输出目录: {output_dir}")
+
+
+if __name__ == '__main__':
+    import argparse
+
+    parser = argparse.ArgumentParser(description='评测结果可视化工具')
+    parser.add_argument('--input', type=str, required=True, help='汇总JSON文件路径')
+    parser.add_argument('--output-dir', type=str, default='./results', help='输出目录')
+
+    args = parser.parse_args()
+
+    main(args.input, args.output_dir)
+\end{lstlisting}
+
+\subsection{运行可视化脚本}
+
+可视化脚本需要两个输入：批量评测生成的 JSON 汇总文件，以及输出目录。
+
+执行步骤：
+
+\begin{lstlisting}[language=bash]
+# 步骤一：运行批量评测（如果尚未运行）
+python batch_evaluation.py
+
+# 步骤二：运行可视化脚本，生成图表和报告
+# 注意将文件名替换为实际生成的 JSON 文件名
+python visualization.py --input results/summary_20240101_120000.json --output-dir ./results
+\end{lstlisting}
+
+执行完成后，\texttt{results} 目录中将包含以下文件：
+\begin{itemize}[leftmargin=2em]
+    \item \texttt{recall\_comparison.png}：召回率对比柱状图
+    \item \texttt{metrics\_heatmap.png}：指标热力图
+    \item \texttt{latency\_comparison.png}：延迟对比图
+    \item \texttt{comprehensive\_comparison.png}：综合对比图（含雷达图）
+    \item \texttt{evaluation\_report\_xxx.md}：Markdown 格式的评测报告
+\end{itemize}
+
+%=============================================================================
+\section{一键执行完整流程}
+%=============================================================================
+
+前面介绍的评测流程涉及多个步骤和脚本。为了简化操作，本节提供一个整合脚本，可以一键完成从环境检查到图表生成的全部流程。
+
+\subsection{整合脚本}
+
+创建 \texttt{run\_evaluation.py} 文件，内容如下：
+
+\begin{lstlisting}[language=python]
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+一键运行完整评测流程
+"""
+
+import os
+import sys
+from datetime import datetime
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+def main():
+    print("="*60)
+    print("RAG 知识库检索评测 - 完整流程")
+    print("="*60)
+
+    # 检查必要文件
+    if not os.path.exists('.env'):
+        print("错误: 未找到 .env 配置文件")
+        print("请创建 .env 文件并配置 DIFY_API_KEY 等参数")
+        sys.exit(1)
+
+    eval_set_file = 'evaluation_set.xlsx'
+    if not os.path.exists(eval_set_file):
+        print(f"未找到评测集文件: {eval_set_file}")
+        print("正在创建评测集模板...")
+        from build_evaluation_set import create_empty_template
+        create_empty_template(eval_set_file)
+        print(f"请编辑 {eval_set_file} 填入评测数据后重新运行")
+        sys.exit(0)
+
+    # 创建输出目录
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = f"./results_{timestamp}"
+    os.makedirs(output_dir, exist_ok=True)
+
+    print(f"\n输出目录: {output_dir}")
+
+    # 配置评测参数
+    config = {
+        'evaluation_set_path': eval_set_file,
+        'datasets': [
+            {'id': os.getenv('DATASET_ID_GENERAL'), 'name': 'general'},
+            {'id': os.getenv('DATASET_ID_PARENT_CHILD'), 'name': 'parent_child'},
+            {'id': os.getenv('DATASET_ID_QA'), 'name': 'qa'},
+        ],
+        'top_k_list': [3, 5, 10],
+        'use_rerank_options': [False, True],
+        'rerank_model': 'bge-reranker-base',
+        'output_dir': output_dir
+    }
+
+    # 过滤掉未配置的知识库
+    config['datasets'] = [d for d in config['datasets'] if d['id']]
+
+    if not config['datasets']:
+        print("错误: 未配置任何知识库ID")
+        print("请在 .env 文件中配置 DATASET_ID_GENERAL 等参数")
+        sys.exit(1)
+
+    print(f"\n将评测以下知识库:")
+    for d in config['datasets']:
+        print(f"  - {d['name']}: {d['id']}")
+
+    # 运行批量评测
+    print("\n" + "="*60)
+    print("开始批量评测...")
+    print("="*60)
+
+    from batch_evaluation import run_batch_evaluation
+    results = run_batch_evaluation(config)
+
+    # 找到生成的JSON文件
+    import glob
+    json_files = glob.glob(os.path.join(output_dir, 'summary_*.json'))
+    if not json_files:
+        print("错误: 未找到汇总JSON文件")
+        sys.exit(1)
+
+    json_file = sorted(json_files)[-1]  # 取最新的
+
+    # 生成可视化图表
+    print("\n" + "="*60)
+    print("生成可视化图表...")
+    print("="*60)
+
+    from visualization import main as vis_main
+    vis_main(json_file, output_dir)
+
+    print("\n" + "="*60)
+    print("评测完成！")
+    print("="*60)
+    print(f"\n请查看输出目录: {output_dir}")
+    print("包含以下文件:")
+    for f in os.listdir(output_dir):
+        print(f"  - {f}")
+
+
+if __name__ == '__main__':
+    main()
+\end{lstlisting}
+
+\subsection{快速上手指南}
+
+如果你希望尽快跑通整个流程，可以按照以下精简步骤操作：
+
+\begin{enumerate}[leftmargin=2em]
+    \item \textbf{步骤一：创建项目目录并安装依赖}
+
+    \begin{lstlisting}[language=bash]
+# 创建项目目录
+mkdir RAG_Evaluation && cd RAG_Evaluation
+
+# 安装所有依赖（单行命令）
+pip install requests pandas numpy matplotlib seaborn tqdm openpyxl python-dotenv jieba
+    \end{lstlisting}
+
+    \item \textbf{步骤二：配置 API 访问凭证}
+
+    在项目目录下创建 \texttt{.env} 文件，填入以下配置信息：
+
+    \begin{lstlisting}
+DIFY_API_BASE=https://api.dify.ai/v1
+DIFY_API_KEY=替换为你的API Key
+DATASET_ID_GENERAL=替换为通用分块知识库ID
+DATASET_ID_PARENT_CHILD=替换为父子分块知识库ID
+DATASET_ID_QA=替换为QA分块知识库ID
+    \end{lstlisting}
+
+    \item \textbf{步骤三：准备评测集}
+
+    \begin{lstlisting}[language=bash]
+# 方式一：生成空白模板，手工填写
+python build_evaluation_set.py --action template --output evaluation_set.xlsx
+
+# 方式二：从知识库自动提取候选问题（需人工审核）
+python build_evaluation_set.py --action build --dataset-id 你的知识库ID --output candidates.xlsx
+    \end{lstlisting}
+
+    \item \textbf{步骤四：执行评测}
+
+    \begin{lstlisting}[language=bash]
+# 运行一键评测脚本
+python run_evaluation.py
+    \end{lstlisting}
+
+    执行完成后，在 \texttt{results} 目录中查看评测结果、对比图表和分析报告。
+\end{enumerate}
+
+%=============================================================================
+\section{常见问题与解决方案}
+%=============================================================================
+
+本节汇总了使用过程中可能遇到的常见问题及其解决方法。
+
+\subsection{API 调用错误}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{p{4cm}p{8cm}}
+\toprule
+\textbf{错误信息} & \textbf{解决方案} \\
+\midrule
+401 Unauthorized & API Key 无效或已过期。请登录 Dify 后台，重新生成一个新的 API Key \\
+403 Forbidden & 权限不足。请检查该 API Key 是否有权访问目标知识库 \\
+404 Not Found & 资源不存在。请核实知识库 ID 是否正确拼写 \\
+429 Too Many Requests & 请求频率过高。在脚本中增加 \texttt{time.sleep()} 的等待时间 \\
+请求超时 & 网络不稳定或知识库规模较大。尝试增大 \texttt{timeout} 参数值 \\
+\bottomrule
+\end{tabular}
+\caption{API 错误代码及解决方案}
+\end{table}
+
+\subsection{评测结果异常}
+
+在分析评测结果时，可能会遇到以下异常情况：
+
+\begin{itemize}[leftmargin=2em]
+    \item \textbf{召回率为 0}：最可能的原因是评测集中的 \texttt{gold\_doc\_id} 填写错误。请登录 Dify 后台，核对实际的文档 ID 是否与评测集中的一致。
+
+    \item \textbf{召回率达到 100\%}：虽然看起来是好事，但需要警惕评测集是否过于简单。建议检查评测集中的问题是否与知识库内容高度重复，适当增加一些难度较高的问题。
+
+    \item \textbf{多次运行结果不一致}：这是正常现象，可能由于 API 响应的随机性或评测集规模较小导致。建议多次运行取平均值，或增大评测集规模以获得更稳定的结果。
+\end{itemize}
+
+\subsection{图表中文显示异常}
+
+如果生成的图表中，中文字符显示为方块或乱码，这是因为系统缺少中文字体。解决方法如下：
+
+\textbf{macOS 系统}：通常无需额外安装，系统自带中文字体。
+
+\textbf{Ubuntu/Linux 系统}：
+
+\begin{lstlisting}[language=bash]
+# 安装文泉驿中文字体
+sudo apt install fonts-wqy-zenhei
+\end{lstlisting}
+
+\textbf{Windows 系统}：下载并安装 SimHei（黑体）字体，双击字体文件即可安装。
+
+安装字体后，需要修改 \texttt{visualization.py} 中的字体配置：
+
+\begin{lstlisting}[language=python]
+# Ubuntu 系统
+plt.rcParams['font.sans-serif'] = ['WenQuanYi Zen Hei']
+
+# Windows 系统
+plt.rcParams['font.sans-serif'] = ['SimHei']
+\end{lstlisting}
+
+%=============================================================================
+\section{附录}
+%=============================================================================
+
+\subsection{项目目录结构}
+
+\begin{lstlisting}
+RAG_Evaluation/
+|-- .env                      # 环境变量配置（API Key等）
+|-- requirements.txt          # Python依赖
+|-- build_evaluation_set.py   # 评测集构建工具
+|-- rag_evaluator.py          # 核心评测模块
+|-- batch_evaluation.py       # 批量评测脚本
+|-- visualization.py          # 可视化图表生成
+|-- run_evaluation.py         # 一键运行脚本
+|-- evaluation_set.xlsx       # 评测集文件
+|-- results/                  # 评测结果输出目录
+    |-- metrics_xxx.json      # 指标JSON
+    |-- detailed_xxx.xlsx     # 详细结果
+    |-- summary_xxx.xlsx      # 汇总结果
+    |-- recall_comparison.png # 召回率对比图
+    |-- metrics_heatmap.png   # 热力图
+    |-- comprehensive_comparison.png  # 综合对比图
+    |-- evaluation_report.md  # 评测报告
+\end{lstlisting}
+
+\subsection{评测指标数学定义}
+
+本节给出各评测指标的严格数学定义，供需要深入了解的读者参考。
+
+\textbf{Recall@K（召回率）}
+
+召回率衡量的是：在所有测试问题中，有多少问题能在 Top K 检索结果中找到正确答案。
+
+直观公式：
+$$Recall@K = \frac{\text{Top K 中包含正确答案的问题数}}{\text{总问题数}}$$
+
+严格数学定义：
+$$Recall@K = \frac{|\{q : TopK(q) \cap Gold(q) \neq \emptyset\}|}{|Q|}$$
+
+其中，$Q$ 是测试问题集合，$TopK(q)$ 是问题 $q$ 的 Top K 检索结果集合，$Gold(q)$ 是问题 $q$ 的标准答案文档集合。
+
+\textbf{Precision@K（精确率）}
+
+精确率衡量的是：在所有检索返回的结果中，有多少是正确的。
+
+$$Precision@K = \frac{\sum_{q \in Q} |TopK(q) \cap Gold(q)|}{K \times |Q|}$$
+
+\textbf{F1@K（F1 分数）}
+
+F1 分数是召回率和精确率的调和平均值。只有当两个指标都较高时，F1 分数才会高。
+
+$$F1@K = \frac{2 \times Precision@K \times Recall@K}{Precision@K + Recall@K}$$
+
+\textbf{MRR（Mean Reciprocal Rank，平均倒数排名）}
+
+MRR 衡量的是正确答案在检索结果中出现的位置。正确答案排名越靠前，MRR 分数越高。
+
+$$MRR = \frac{1}{|Q|} \sum_{q \in Q} \frac{1}{rank_q}$$
+
+其中，$rank_q$ 是问题 $q$ 的第一个正确答案在检索结果中的排名。
+
+举例说明：
+\begin{itemize}[leftmargin=2em]
+    \item 正确答案排在第 1 位，贡献 $\frac{1}{1} = 1.0$
+    \item 正确答案排在第 2 位，贡献 $\frac{1}{2} = 0.5$
+    \item 正确答案排在第 5 位，贡献 $\frac{1}{5} = 0.2$
+    \item 未找到正确答案，贡献 $0$
+\end{itemize}
+
+\subsection{参考资料}
+
+如需进一步学习 RAG 系统评测的相关知识，推荐以下资源：
+
+\begin{itemize}[leftmargin=2em]
+    \item \textbf{Dify 官方文档}：\url{https://docs.dify.ai/} \\
+    包含知识库配置、API 使用等详细说明。
+
+    \item \textbf{RAGAS 评测框架}：\url{https://github.com/explodinggradients/ragas} \\
+    开源的 RAG 评测工具，提供了更多评测指标和自动化评测能力。
+
+    \item \textbf{LlamaIndex 评测指南}：\url{https://docs.llamaindex.ai/} \\
+    另一个流行的 RAG 框架的评测方法论和最佳实践。
+\end{itemize}
+
+\vspace{2cm}
+\begin{center}
+\rule{0.5\textwidth}{0.4pt}
+
+\vspace{0.5cm}
+\textit{本文档提供了 Dify 知识库召回率评测的完整流程和工具。}
+
+\textit{如有问题或建议，欢迎反馈。}
+\end{center}
+
+\end{document}
