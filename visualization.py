@@ -12,10 +12,47 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import datetime
+import matplotlib.font_manager as fm
 
-# 设置中文字体
-plt.rcParams['font.sans-serif'] = ['SimHei', 'Arial Unicode MS', 'DejaVu Sans']
-plt.rcParams['axes.unicode_minus'] = False
+def _configure_chinese_font():
+    """
+    Configure a usable Chinese font across environments.
+
+    Matplotlib will silently fall back to fonts that may not contain CJK glyphs,
+    producing warnings like: "Glyph xxxx missing from font(s) Arial".
+    """
+    preferred = [
+        # macOS common
+        'PingFang SC',
+        'Hiragino Sans GB',
+        'STHeiti',
+        'Songti SC',
+        # Windows common
+        'Microsoft YaHei',
+        'SimHei',
+        # Broad Unicode fallback (may or may not exist)
+        'Arial Unicode MS',
+        # Linux common
+        'Noto Sans CJK SC',
+        'WenQuanYi Zen Hei',
+        # final fallback
+        'DejaVu Sans',
+    ]
+
+    available = {f.name for f in fm.fontManager.ttflist}
+    usable = [name for name in preferred if name in available]
+
+    # Ensure we prefer fonts that actually exist on the machine.
+    if usable:
+        plt.rcParams['font.sans-serif'] = usable
+        plt.rcParams['font.family'] = 'sans-serif'
+
+    # Fix minus sign rendering
+    plt.rcParams['axes.unicode_minus'] = False
+
+
+# 设置中文字体（自动选择本机可用字体）
+_configure_chinese_font()
 
 # 设置绘图风格
 sns.set_style("whitegrid")
