@@ -21,6 +21,9 @@ class EvaluationSetBuilder:
     def __init__(self):
         self.api_base = os.getenv('DIFY_API_BASE', 'https://api.dify.ai/v1')
         self.api_key = os.getenv('DIFY_API_KEY')
+        self.enable_keyword_candidates = str(
+            os.getenv('ENABLE_KEYWORD_CANDIDATES', 'false')
+        ).strip().lower() in {'1', 'true', 'yes', 'y'}
         self.headers = {
             'Authorization': f'Bearer {self.api_key}',
             'Content-Type': 'application/json'
@@ -161,6 +164,24 @@ class EvaluationSetBuilder:
 
         # 候选问题按“来源类型”从高到低写入，最后去重截断
         candidates = []
+        domain_hint_re = re.compile(
+            r'(?:流程|步骤|方法|指南|说明|规范|规则|政策|制度|要求|条件|标准|'
+            r'费用|时限|时间|周期|有效期|申请|办理|配置|安装|部署|接入|对接|'
+            r'上传|下载|更新|删除|查询|设置|开通|报销|请假|年假|试用期|权限|登录)'
+        )
+        news_marker_re = re.compile(
+            r'(?:据.*?报道|记者|警方|法院|检方|嫌疑人|新华社|中新网|央视|'
+            r'当地时间|发布会|表示|称|指出|认为|消息人士|路透|法新社|彭博)'
+        )
+        generic_entity_terms = {
+            '男子', '女子', '男孩', '女孩', '男人', '女人', '记者', '警方', '法院',
+            '中国', '美国', '日本', '英国', '法国', '德国', '台湾', '以色列',
+            '公司', '部门', '人员', '网友', '市民', '专家'
+        }
+
+        news_marker_hits = sum(1 for line in lines if news_marker_re.search(line))
+        has_domain_hint = any(domain_hint_re.search(line) for line in lines)
+        is_news_like_segment = news_marker_hits >= 2 and not has_domain_hint
 
         def normalize_question(q: str) -> str:
             q = q.strip()
@@ -175,6 +196,29 @@ class EvaluationSetBuilder:
             q = q.replace('?', '？')
             return q
 
+        def is_high_value_question(q: str) -> bool:
+            """
+            质量过滤：尽量去掉“什么是男子/中国/记者”这类低价值伪问题。
+            """
+            # 过多符号通常来自残片
+            if q.count('“') + q.count('"') + q.count('\'') > 2:
+                return False
+
+            m = re.match(r'^什么是(.+?)？$', q)
+            if m:
+                obj = m.group(1).strip()
+                obj = re.sub(r'[，。,；;：:\s]+$', '', obj)
+                # 明显泛实体词直接过滤
+                if obj in generic_entity_terms:
+                    return False
+                # 太短且无业务指向词，通常无意义
+                if len(obj) <= 2 and not domain_hint_re.search(obj):
+                    return False
+                # 新闻叙事段里，“什么是X”更容易是伪问题
+                if is_news_like_segment and not domain_hint_re.search(obj):
+                    return False
+            return True
+
         def add_candidate(q: str):
             q = normalize_question(q)
             if not q:
@@ -184,6 +228,9 @@ class EvaluationSetBuilder:
                 return
             # 二次噪音过滤
             if noise_line_re.search(q):
+                return
+            # 质量过滤
+            if not is_high_value_question(q):
                 return
             candidates.append(q)
 
@@ -216,10 +263,13 @@ class EvaluationSetBuilder:
             r')'
         )
         process_hint_re = re.compile(r'(?:流程|步骤|方法|指南|说明|规范|规则|注意事项|常见问题|FAQ|Q&A)', re.IGNORECASE)
-        action_hint_re = re.compile(r'(?:配置|安装|部署|接入|对接|申请|办理|使用|创建|上传|下载|更新|删除|查询|设置|开通)')
+        action_hint_re = re.compile(
+            r'(?:配置|安装|部署|接入|对接|申请|办理|使用|创建|上传|下载|更新|删除|查询|设置|开通|'
+            r'提交|审批|支付|打款|报销|请假|登录|授权)'
+        )
 
         def looks_like_heading(line: str) -> bool:
-            if len(line) < 6 or len(line) > 40:
+            if len(line) < 4 or len(line) > 40:
                 return False
             # 含逗号的更可能是正文/水印（如“返回搜狐，查看更多…”）
             if '，' in line or ',' in line:
@@ -237,40 +287,46 @@ class EvaluationSetBuilder:
                 return True
             return False
 
-        for line in lines:
-            if not looks_like_heading(line):
-                continue
-
-            clean = heading_prefix_re.sub('', line).strip().rstrip('：:')
-            if not clean:
-                continue
-
-            # 已经是问句/疑问式标题
-            if clean.startswith(question_starters) or clean.endswith(('？', '?')):
-                add_candidate(clean)
-                continue
-
-            if action_hint_re.search(clean):
-                add_candidate(f"如何{clean}")
-            elif process_hint_re.search(clean):
-                add_candidate(f"{clean}有哪些步骤")
-                add_candidate(f"{clean}是什么")
-            else:
-                add_candidate(f"什么是{clean}")
-
-        # 规则5（可选）：关键词补充（依赖 jieba；没装也不影响主流程）
-        try:
-            import jieba.analyse  # type: ignore
-            keywords = jieba.analyse.textrank(cleaned_text, topK=5, withWeight=False)
-            for kw in keywords:
-                kw = str(kw).strip()
-                if len(kw) < 2 or len(kw) > 12:
+        # 新闻叙事段一般不做“标题模板化/关键词补充”，避免伪问题爆炸
+        if not is_news_like_segment:
+            for line in lines:
+                if not looks_like_heading(line):
                     continue
-                if noise_line_re.search(kw):
+
+                clean = heading_prefix_re.sub('', line).strip().rstrip('：:')
+                if not clean:
                     continue
-                add_candidate(f"什么是{kw}")
-        except Exception:
-            pass
+
+                # 已经是问句/疑问式标题
+                if clean.startswith(question_starters) or clean.endswith(('？', '?')):
+                    add_candidate(clean)
+                    continue
+
+                if process_hint_re.search(clean):
+                    add_candidate(f"{clean}有哪些步骤")
+                    add_candidate(f"{clean}是什么")
+                elif action_hint_re.search(clean):
+                    if re.search(r'(?:审批|报销|请假|登录|授权|设置|配置|提交|打款)$', clean):
+                        add_candidate(f"{clean}怎么操作")
+                    else:
+                        add_candidate(f"如何{clean}")
+                else:
+                    add_candidate(f"什么是{clean}")
+
+            # 规则5（可选）：关键词补充（默认关闭，避免新闻类文本误抽）
+            if self.enable_keyword_candidates:
+                try:
+                    import jieba.analyse  # type: ignore
+                    keywords = jieba.analyse.textrank(cleaned_text, topK=5, withWeight=False)
+                    for kw in keywords:
+                        kw = str(kw).strip()
+                        if len(kw) < 2 or len(kw) > 12:
+                            continue
+                        if noise_line_re.search(kw):
+                            continue
+                        add_candidate(f"什么是{kw}")
+                except Exception:
+                    pass
 
         # 去重（保留顺序）
         uniq = list(OrderedDict.fromkeys(candidates))
