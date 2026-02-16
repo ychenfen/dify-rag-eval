@@ -105,7 +105,7 @@ class EvaluationSetBuilder:
 
         return all_segments
 
-    def extract_candidate_questions(self, segment_text: str) -> list:
+    def extract_candidate_question_items(self, segment_text: str) -> list:
         """
         从文本段落中提取候选问题
         基于规则的提取（偏高精度、低召回，便于人工筛选）。
@@ -115,7 +115,7 @@ class EvaluationSetBuilder:
             segment_text: 段落文本
 
         Returns:
-            候选问题列表
+            候选问题项列表（每项包含 query/source_text）
         """
         import re
         from collections import OrderedDict
@@ -219,7 +219,7 @@ class EvaluationSetBuilder:
                     return False
             return True
 
-        def add_candidate(q: str):
+        def add_candidate(q: str, source_text: str = ""):
             q = normalize_question(q)
             if not q:
                 return
@@ -232,7 +232,11 @@ class EvaluationSetBuilder:
             # 质量过滤
             if not is_high_value_question(q):
                 return
-            candidates.append(q)
+            source_text = str(source_text).strip() if source_text else ""
+            candidates.append({
+                'query': q,
+                'source_text': source_text,
+            })
 
         # 规则1：显式 Q/A 结构：问： / Q:
         qa_prefix_re = re.compile(r'^(?:问|问题|Q)\s*[：:]\s*(.+)$', re.IGNORECASE)
@@ -240,19 +244,19 @@ class EvaluationSetBuilder:
             m = qa_prefix_re.match(line)
             if not m:
                 continue
-            add_candidate(m.group(1))
+            add_candidate(m.group(1), line)
 
         # 规则2：直接包含问号的“行内”句子（避免跨行把整段拼进来）
         for line in lines:
             if '？' in line or '?' in line:
                 q = re.split(r'[？?]', line, maxsplit=1)[0].strip()
-                add_candidate(q)
+                add_candidate(q, line)
 
         # 规则3：疑问词开头的句子，转成问句（逐行处理更稳）
         question_starters = ('如何', '怎么', '怎样', '为什么', '为何', '什么是', '什么叫', '哪些', '是否', '能否', '可否')
         for line in lines:
             if line.startswith(question_starters):
-                add_candidate(line)
+                add_candidate(line, line)
 
         # 规则4：标题/小节行 -> 模板化生成问题（比之前更严格）
         heading_prefix_re = re.compile(
@@ -299,19 +303,19 @@ class EvaluationSetBuilder:
 
                 # 已经是问句/疑问式标题
                 if clean.startswith(question_starters) or clean.endswith(('？', '?')):
-                    add_candidate(clean)
+                    add_candidate(clean, line)
                     continue
 
                 if process_hint_re.search(clean):
-                    add_candidate(f"{clean}有哪些步骤")
-                    add_candidate(f"{clean}是什么")
+                    add_candidate(f"{clean}有哪些步骤", line)
+                    add_candidate(f"{clean}是什么", line)
                 elif action_hint_re.search(clean):
                     if re.search(r'(?:审批|报销|请假|登录|授权|设置|配置|提交|打款)$', clean):
-                        add_candidate(f"{clean}怎么操作")
+                        add_candidate(f"{clean}怎么操作", line)
                     else:
-                        add_candidate(f"如何{clean}")
+                        add_candidate(f"如何{clean}", line)
                 else:
-                    add_candidate(f"什么是{clean}")
+                    add_candidate(f"什么是{clean}", line)
 
             # 规则5（可选）：关键词补充（默认关闭，避免新闻类文本误抽）
             if self.enable_keyword_candidates:
@@ -324,13 +328,19 @@ class EvaluationSetBuilder:
                             continue
                         if noise_line_re.search(kw):
                             continue
-                        add_candidate(f"什么是{kw}")
+                        add_candidate(f"什么是{kw}", kw)
                 except Exception:
                     pass
 
-        # 去重（保留顺序）
-        uniq = list(OrderedDict.fromkeys(candidates))
+        # 去重（按 query 去重，保留首次出现的 source_text）
+        uniq = list(OrderedDict((item['query'], item) for item in candidates).values())
         return uniq[:max_questions]  # 每个段落最多返回 max_questions 个候选问题
+
+    def extract_candidate_questions(self, segment_text: str) -> list:
+        """
+        兼容旧接口：仅返回问题字符串列表。
+        """
+        return [item['query'] for item in self.extract_candidate_question_items(segment_text)]
 
     def build_candidate_set(self, dataset_id: str, output_file: str = 'candidate_questions.xlsx'):
         """
@@ -361,17 +371,24 @@ class EvaluationSetBuilder:
                 if not seg_text:
                     continue
 
-                # 提取候选问题
-                questions = self.extract_candidate_questions(seg_text)
+                # 提取候选问题（含来源句）
+                question_items = self.extract_candidate_question_items(seg_text)
 
-                for q in questions:
+                for item in question_items:
+                    q = item.get('query', '').strip()
+                    source_text = item.get('source_text', '').strip()
+                    if not q:
+                        continue
+
                     candidates.append({
                         'id': len(candidates) + 1,
                         'query': q,
                         'gold_doc_id': doc_id,
                         'gold_doc_name': doc_name,
                         'gold_segment_id': seg_id,
-                        'gold_chunk_text': seg_text[:200],  # 截取前200字符
+                        # 优先保存问题来源句，避免“问题与 gold_chunk_text 对不上”
+                        'gold_chunk_text': (source_text or seg_text)[:300],
+                        'question_source_text': source_text,
                         'category': '',  # 待人工填写
                         'difficulty': '',  # 待人工填写
                         'is_valid': '',  # 待人工确认（Y/N）
