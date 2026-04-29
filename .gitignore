@@ -1,27 +1,12 @@
-# Python
+runs/
 __pycache__/
-*.py[cod]
-*.egg-info/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
+*.pyc
 .venv/
-venv/
-
-# Env / secrets
 .env
-
-# Outputs
-results/
-results_*/
 *.log
-*.aux
-*.out
-*.toc
-
-# Spreadsheets generated during evaluation (repo root)
-/candidates*.xlsx
-/evaluation_set*.xlsx
-
-# macOS
 .DS_Store
+.idea/
+.vscode/
+build/
+dist/
+*.egg-info/

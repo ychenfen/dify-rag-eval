@@ -1,0 +1,49 @@
+# dify-rag-eval — baseline config
+# Tag: baseline-2026-04
+# Pin every model + version so re-runs are deterministic.
+
+run_name: baseline-2026-04
+
+dataset:
+  name: tech-faq-zh-1k
+  path: data/tech-faq-zh-1k.jsonl
+  sample_size: 200          # subsample for fast iteration
+  random_seed: 42
+
+retriever:
+  type: dify
+  endpoint: http://localhost/v1
+  collection: tech-faq-zh
+  top_k: 5
+  embedding_model: bge-large-zh-v1.5
+
+reranker:
+  type: bge-reranker-v2-m3
+  enabled: true
+  top_k: 3
+
+generator:
+  type: openai
+  model: gpt-4o-mini
+  temperature: 0.0
+  max_tokens: 512
+  api_version: "2024-08-01"
+
+metrics:
+  - faithfulness
+  - context_recall
+  - answer_relevancy
+  - latency
+  - cost
+
+cost_table:
+  gpt-4o-mini:
+    input_per_1k_usd: 0.00015
+    output_per_1k_usd: 0.00060
+  bge-large-zh-v1.5: 0.0       # self-hosted
+  bge-reranker-v2-m3: 0.0      # self-hosted
+
+reporting:
+  out_dir: runs/baseline-2026-04
+  emit_per_query_log: true
+  leaderboard_md: LEADERBOARD.md

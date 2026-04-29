@@ -1,0 +1,27 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install ruff
+      - name: Lint
+        run: ruff check evaluation/ || true
+      - name: Score sample
+        run: |
+          python evaluation/scorer.py \
+            --input data/sample.jsonl \
+            --cost-table '{"gpt-4o-mini":{"input_per_1k_usd":0.00015,"output_per_1k_usd":0.00060}}' \
+            --output runs/ci/score.json
+      - name: Leaderboard
+        run: python evaluation/leaderboard.py --runs-dir runs --out LEADERBOARD.md
+      - name: Show leaderboard
+        run: cat LEADERBOARD.md
