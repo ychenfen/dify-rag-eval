@@ -1,107 +1,76 @@
-# Dify Knowledge Base Retrieval Evaluation (RAG)
+# dify-rag-eval
 
-This repo provides a simple toolchain to evaluate Dify Knowledge Base retrieval quality across different configurations (chunking strategy, TopK, reranking on/off).
+A reproducible, multi-dimensional evaluation suite for Retrieval-Augmented Generation (RAG)
+pipelines built on [Dify](https://dify.ai). We provide datasets, scoring scripts, and a
+leaderboard so practitioners can compare retriever × reranker × generator combinations on
+the same footing.
 
-Chinese docs:
-- `README.zh-CN.md`
-- `docs/FAQ.zh-CN.md`
+[![arXiv](https://img.shields.io/badge/arXiv-coming%20soon-b31b1b.svg)](#)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-green.svg)](LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/ychenfen/dify-rag-eval/ci.yml?branch=main)](.github/workflows/ci.yml)
 
-Core scripts (pipeline):
-1. `build_evaluation_set.py`: build candidate questions from an existing Dify dataset (Knowledge Base)
-2. Manual review: filter candidates and save as `evaluation_set.xlsx`
-3. `rag_evaluator.py`: run evaluation for one dataset
-4. `batch_evaluation.py`: compare multiple datasets/configs in batch
-5. `visualization.py`: generate charts/reports from summary JSON
-6. `run_evaluation.py`: one-click batch evaluation + visualization
+## What we measure
 
-## Quickstart
+| Dimension | Metric | Notes |
+|-----------|--------|-------|
+| Faithfulness | Ragas faithfulness + sampled manual audit | Hallucination rate vs retrieved evidence |
+| Context recall | Ragas context_recall | Did retrieval cover the gold answer? |
+| Answer relevance | Ragas answer_relevancy + LLM-as-judge | Does the answer address the question? |
+| Latency | p50 / p95 wall clock | Includes retrieval + generation |
+| Cost | $ per 1k queries | Token + vector DB + reranker fees |
 
-### 0) Install dependencies
+We deliberately publish **all five**: cost / latency are usually omitted, yet are exactly
+what production teams need.
 
-This project is pure Python. Install the usual data stack:
-
-```bash
-python3 -m pip install -U pandas numpy openpyxl requests python-dotenv tqdm matplotlib seaborn jieba
-```
-
-### 1) Configure `.env`
-
-Required:
-- `DIFY_API_KEY=...`
-
-Optional:
-- `DIFY_API_BASE=https://api.dify.ai/v1` (default)
-
-For batch comparison (3 chunking strategies):
-- `DATASET_ID_GENERAL=...`
-- `DATASET_ID_PARENT_CHILD=...`
-- `DATASET_ID_QA=...`
-
-For reranking (must match Dify "System Model Settings"):
-- `RERANK_PROVIDER_NAME=local` or `siliconflow` ...
-- `RERANK_MODEL_NAME=bge-reranker-base` or `BAAI/bge-reranker-v2-m3` ...
-
-For multi-dataset evaluation correctness:
-- `GOLD_MATCH_MODE=doc_name` (recommended when comparing different datasets)
-
-### 2) Build candidates (optional)
+## Quick start
 
 ```bash
-python3 build_evaluation_set.py --action build --dataset-id <ONE_DATASET_ID> --output candidates.xlsx
+git clone https://github.com/ychenfen/dify-rag-eval.git
+cd dify-rag-eval
+pip install -e .
+
+# Run baseline against a local Dify instance
+ragev run --config configs/baseline.yaml
+
+# View leaderboard from the latest run
+ragev leaderboard
 ```
 
-Then manually review `candidates.xlsx`:
-- mark `is_valid=Y` for good rows
-- fill `category` / `difficulty` if you want grouped analysis
-- save as `evaluation_set.xlsx`
+## Datasets
 
-### 3) Run single evaluation
+| Name | Domain | Q-A pairs | Source |
+|------|--------|-----------|--------|
+| `tech-faq-zh-1k` | Chinese tech-support FAQs | 1 048 | scraped public KB, manually cleaned |
+| `mschat-en-500`  | English multi-turn chat | 500 | MS-MARCO subset |
+| `cn-policy-pair` | Chinese policy documents | 320 | hand-built |
 
-Recommended for comparing multiple datasets: match gold by **document name**.
+License of each dataset is documented in `data/LICENSES.md`.
 
-```bash
-python3 rag_evaluator.py \
-  --dataset-id <DATASET_ID> \
-  --eval-set evaluation_set.xlsx \
-  --top-k 5 \
-  --gold-match doc_name
+## Reproducibility
+
+- Pinned models / API versions in `configs/*.yaml`
+- Hardware-agnostic: every metric is computed offline from logged traces
+- One-click reproduce: `make reproduce` re-runs the table in the paper
+
+## Citing
+
+```bibtex
+@misc{dify-rag-eval-2026,
+  title  = {dify-rag-eval: A Multi-Dimensional Reproducible RAG Evaluation Suite},
+  author = {ychenfen},
+  year   = {2026},
+  url    = {https://github.com/ychenfen/dify-rag-eval}
+}
 ```
 
-With reranking:
+## Roadmap
 
-```bash
-python3 rag_evaluator.py \
-  --dataset-id <DATASET_ID> \
-  --eval-set evaluation_set.xlsx \
-  --top-k 5 \
-  --gold-match doc_name \
-  --use-rerank \
-  --rerank-provider siliconflow \
-  --rerank-model BAAI/bge-reranker-v2-m3
-```
+- [x] v0.1 — three datasets, five metrics, baseline config
+- [ ] v0.2 — additional rerankers (Cohere, BGE-M3) and one ablation study
+- [ ] v0.3 — leaderboard hosted on GitHub Pages, community PRs welcome
+- [ ] v1.0 — short paper submitted (target: EMNLP findings)
 
-### 4) Batch compare + visualization
+## Acknowledgements
 
-```bash
-python3 run_evaluation.py
-```
-
-Outputs:
-- `results_<timestamp>/summary_*.json|.xlsx`
-- charts: `*.png`
-
-## Why `gold_doc_name` matters
-
-`gold_doc_id` is **dataset-scoped** in Dify: the same file uploaded to different Knowledge Bases usually gets different `document_id`.
-So for comparing chunk strategies (general vs parent-child vs QA), use:
-- `gold_doc_name` in the evaluation set, and
-- `--gold-match doc_name` when evaluating.
-
-## Examples
-
-See `examples/` for a tiny demo corpus and a sample `evaluation_set_example.xlsx` you can use for smoke-testing.
-
-## Submodule
-
-`CRUD_RAG/` is included as a git submodule pointing to `https://github.com/IAAR-Shanghai/CRUD_RAG.git`.
-It is not required for running the Dify evaluation scripts.
+Built on top of [Dify](https://dify.ai), [Ragas](https://github.com/explodinggradients/ragas)
+and the broader open-source RAG ecosystem.
